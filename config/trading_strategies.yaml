@@ -1,0 +1,141 @@
+# Trading Strategy Parameters
+
+probability_mispricing:
+  enabled: true
+  description: "Buy when TimesFM forecast exceeds market price by confidence threshold"
+  
+  entry_conditions:
+    forecast_deviation: 0.02  # Minimum 2% difference between forecast and market price
+    confidence_band_width: 0.05  # Quantile width must be < 5%
+    min_forecast_horizon: 6  # hours
+    market_liquidity: 10000.0  # USD
+    volume_ratio: 1.5  # Current volume / average volume
+    
+  position_sizing:
+    base_size: 0.05  # 5% of portfolio
+    confidence_multiplier: 2.0  # Double for high confidence forecasts
+    max_size: 0.10  # 10% maximum
+    min_size: 0.01  # 1% minimum
+    
+  exit_conditions:
+    profit_target: 0.05  # 5% profit
+    stop_loss: 0.03  # 3% loss
+    trailing_stop: 0.02  # 2% trailing stop
+    max_hold_time: 72  # hours
+    forecast_convergence: 0.01  # Exit when within 1% of forecast
+    
+  filters:
+    min_market_age: 24  # hours
+    max_resolution_days: 60
+    exclude_categories: ["sports", "entertainment"]
+    require_volume_growth: true
+
+convergence_trading:
+  enabled: true
+  description: "Bet on markets converging to forecasted probability over time"
+  
+  entry_conditions:
+    current_deviation: 0.03  # Minimum 3% deviation from forecast
+    convergence_trend: true  # Must be moving toward forecast
+    days_to_resolution: [7, 60]  # Between 1 week and 2 months
+    liquidity_score: 0.7  # High liquidity preferred
+    
+  position_sizing:
+    time_decay_adjusted: true
+    base_size: 0.03  # 3% of portfolio
+    time_multiplier: 0.5  # Reduce by 50% per week until resolution
+    max_size: 0.08  # 8% maximum
+    
+  exit_conditions:
+    target_convergence: 0.01  # Exit when within 1% of forecast
+    days_until_resolution: 3  # Exit 3 days before resolution
+    max_loss_before_exit: 0.10  # 10% maximum paper loss
+    early_profit_take: 0.08  # Take profit at 8% if reached early
+    
+  filters:
+    oracle_type: ["api", "real_world"]  # Avoid committee resolutions
+    market_creator_reputation: 0.8
+    historical_convergence: true  # Check if similar markets converged
+
+volatility_arbitrage:
+  enabled: false  # Higher risk strategy
+  description: "Exploit differences between forecasted and implied volatility"
+  
+  entry_conditions:
+    volatility_spread: 0.03  # Minimum 3% spread
+    forecast_confidence: 0.8  # High confidence required
+    market_volume: 50000.0  # High volume required
+    option_availability: true  # Need YES/NO pair availability
+    
+  position_sizing:
+    base_size: 0.02  # 2% of portfolio (high risk)
+    spread_multiplier: 3.0  # Size based on spread size
+    max_size: 0.05  # 5% maximum
+    
+  exit_conditions:
+    spread_normalization: 0.01  # Exit when spread < 1%
+    max_hold_time: 24  # hours
+    stop_loss: 0.05  # 5% loss
+    profit_target: 0.04  # 4% profit
+    
+  filters:
+    require_hedge: true
+    correlation_threshold: 0.8
+    liquidity_depth: 100000.0
+
+combined_strategy:
+  enabled: true
+  description: "Dynamic combination of strategies based on market conditions"
+  
+  strategy_weights:
+    probability_mispricing: 0.50
+    convergence_trading: 0.35
+    volatility_arbitrage: 0.15
+    
+  market_condition_rules:
+    high_volatility:
+      - strategy: "volatility_arbitrage"
+        weight: 0.40
+      - strategy: "probability_mispricing" 
+        weight: 0.40
+      - strategy: "convergence_trading"
+        weight: 0.20
+        
+    low_volatility:
+      - strategy: "convergence_trading"
+        weight: 0.60
+      - strategy: "probability_mispricing"
+        weight: 0.40
+      - strategy: "volatility_arbitrage"
+        weight: 0.00
+        
+    near_resolution:
+      - strategy: "convergence_trading"
+        weight: 0.80
+      - strategy: "probability_mispricing"
+        weight: 0.20
+      - strategy: "volatility_arbitrage"
+        weight: 0.00
+        
+  volatility_thresholds:
+    low: 0.01  # 1% daily volatility
+    medium: 0.03  # 3% daily volatility  
+    high: 0.06  # 6% daily volatility
+
+# Strategy performance tracking
+performance_tracking:
+  update_interval: 3600  # 1 hour
+  lookback_period: 30  # days
+  metrics:
+    - "sharpe_ratio"
+    - "win_rate"
+    - "profit_factor"
+    - "max_drawdown"
+    - "average_hold_time"
+    
+  adaptive_weights:
+    enabled: true
+    learning_rate: 0.1
+    rebalance_interval: 168  # 1 week in hours
+    min_weight: 0.05
+    max_weight: 0.70
