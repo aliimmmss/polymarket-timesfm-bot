@@ -1,0 +1,11 @@
+market_id,market_name,current_price,forecast_mean,expected_return_pct,mispricing_score,forecast_values
+0,NCAAB: Arizona State Sun Devils vs. Nevada Wolf Pa,0.4498,0.4863,8.11,0.073,"[0.4869, 0.4868, 0.4862, 0.4859, 0.4863, 0.4856, 0.4865]"
+1,NCAAB: Tennessee Volunteers vs. Duke Blue Devils 2,0.3058,0.2803,-8.32,-0.055,"[0.2722, 0.2752, 0.2775, 0.2804, 0.2836, 0.2855, 0.2877]"
+2,NBA: LA Clippers vs. Orlando Magic 2023-03-18,0.3448,0.3708,7.53,0.055,"[0.3841, 0.377, 0.3735, 0.3708, 0.3675, 0.3629, 0.3596]"
+3,[Single Market] Will Glenn Youngkin win the 2024 R,0.3986,0.4935,23.81,0.194,"[0.4934, 0.4948, 0.496, 0.495, 0.4943, 0.4912, 0.4897]"
+4,NBA: Miami Heat vs. Cleveland Cavaliers 2023-03-08,0.3914,0.4345,11.02,0.088,"[0.4368, 0.4361, 0.4353, 0.4344, 0.4339, 0.4336, 0.4317]"
+5,NHL: Chicago Blackhawks vs. Boston Bruins 2023-03-,0.6128,0.5977,-2.47,-0.031,"[0.5868, 0.5897, 0.5929, 0.5972, 0.6013, 0.606, 0.6099]"
+6,Will Brendan Fraser win the Oscar for Best Actor i,0.4833,0.4684,-3.08,-0.03,"[0.4581, 0.464, 0.4674, 0.4701, 0.4713, 0.4737, 0.474]"
+7,NHL: Carolina Hurricanes vs. Winnipeg Jets 2023-03,0.3455,0.3426,-0.84,-0.006,"[0.3396, 0.3396, 0.343, 0.3441, 0.3443, 0.3439, 0.344]"
+8,NBA: Nuggets vs. Magic (02/09/2023),0.4265,0.4998,17.17,0.148,"[0.5152, 0.5076, 0.5036, 0.4999, 0.495, 0.4902, 0.4868]"
+9,NBA: Washington Wizards vs. Atlanta Hawks 2023-03-,0.5857,0.5562,-5.05,-0.06,"[0.5452, 0.5497, 0.5533, 0.5567, 0.5594, 0.5627, 0.5661]"
