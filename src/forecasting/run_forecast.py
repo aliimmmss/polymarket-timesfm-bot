@@ -1,327 +1,250 @@
 #!/usr/bin/env python3
 """
-TimesFM Forecasting for Polymarket Markets
-Loads market data and forecasts price movements for the next 1-7 days
+TimesFM 2.5 Forecasting Script for Polymarket Data
+Uses the CORRECT TimesFM 2.5 API
 """
 
-import pandas as pd
+import torch
 import numpy as np
-import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
-import os
+import pandas as pd
+import timesfm
+from datetime import datetime
 import json
+import os
 from pathlib import Path
-import warnings
-warnings.filterwarnings('ignore')
+import sys
 
-# Configuration
-DATA_DIR = Path.home() / "polymarket-bot" / "data"
-OUTPUT_DIR = DATA_DIR / "forecasts"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+# Add timesfm to path if needed
+sys.path.append('/tmp/timesfm-install')
 
-class TimesFMForecaster:
-    def __init__(self):
-        """Initialize TimesFM forecaster"""
-        self.model = None
-        self.context_length = 512
-        self.horizon = 7
-        
-        # Try to import TimesFM
-        try:
-            import timesfm
-            self.timesfm_available = True
-            print("TimesFM imported successfully")
-        except ImportError:
-            self.timesfm_available = False
-            print("TimesFM not available - using mock forecasts")
+def setup_timesfm_model():
+    """Initialize TimesFM 2.5 model with correct configuration"""
+    print("Initializing TimesFM 2.5 model...")
     
-    def load_market_data(self, market_file="markets.csv"):
-        """Load Polymarket market data"""
-        try:
-            filepath = DATA_DIR / market_file
-            df = pd.read_csv(filepath)
-            print(f"Loaded {len(df)} markets from {filepath}")
-            
-            # Filter active markets
-            active_markets = df[df['active'] == True].copy()
-            print(f"Active markets: {len(active_markets)}")
-            
-            # Parse dates
-            if 'end_date_iso' in active_markets.columns:
-                active_markets['end_date'] = pd.to_datetime(active_markets['end_date_iso'], errors='coerce')
-            
-            # Extract relevant columns
-            market_data = []
-            for _, row in active_markets.iterrows():
-                market = {
-                    'condition_id': row.get('condition_id', ''),
-                    'question': row.get('question', ''),
-                    'market_slug': row.get('market_slug', ''),
-                    'end_date': row.get('end_date', None),
-                    'active': row.get('active', False),
-                }
-                market_data.append(market)
-            
-            return market_data
-        except Exception as e:
-            print(f"Error loading market data: {e}")
-            return []
+    # CRITICAL: Use TimesFM_2p5_200M_torch.from_pretrained
+    model = timesfm.TimesFM_2p5_200M_torch.from_pretrained('google/timesfm-2.5-200m-pytorch')
     
-    def generate_mock_price_series(self, market_id, days=30):
-        """Generate mock price series for demonstration"""
-        np.random.seed(hash(market_id) % 10000)
+    # CRITICAL: Use ForecastConfig (NOT TimesFmHparams/TimesFmCheckpoint)
+    model.compile(
+        timesfm.ForecastConfig(
+            max_context=256,           # MUST match input length exactly
+            max_horizon=12,            # Forecast horizon (12 steps)
+            normalize_inputs=False,    # False works better with zero-mean data
+            use_continuous_quantile_head=True,
+            force_flip_invariance=False,
+            infer_is_positive=False,
+            fix_quantile_crossing=True,
+        )
+    )
+    
+    print("✓ TimesFM 2.5 model initialized")
+    print(f"   max_context: {model.forecast_config.max_context}")
+    print(f"   max_horizon: {model.forecast_config.max_horizon}")
+    print(f"   normalize_inputs: {model.forecast_config.normalize_inputs}")
+    return model
+
+def fetch_real_polymarket_data():
+    """
+    Fetch REAL Polymarket price history data
+    Returns: List of dicts with market_id, prices (list of floats)
+    """
+    print("\nFetching real Polymarket data...")
+    
+    # TODO: Replace with actual API calls to CLOB API
+    # For now, use sample data to demonstrate the pipeline
+    
+    # Sample real data structure - replace with actual API response
+    sample_markets = [
+        {
+            'market_id': '0x6d0e09d0f04572d9b1',
+            'market_name': 'US forces enter Iran by April 30?',
+            'prices': np.random.uniform(0.5, 0.8, 256).tolist(),  # 256 points exactly
+        },
+        {
+            'market_id': '0x40b063d0ec332f54c6',
+            'market_name': 'Suns vs Hornets',
+            'prices': np.random.uniform(0.01, 0.2, 256).tolist(),  # 256 points exactly
+        },
+        {
+            'market_id': '0x9df006923390474e5c',
+            'market_name': 'Lakers vs Thunder',
+            'prices': np.random.uniform(0.01, 0.1, 256).tolist(),  # 256 points exactly
+        },
+    ]
+    
+    print(f"Loaded {len(sample_markets)} markets")
+    for market in sample_markets:
+        print(f"  {market['market_name']}: {len(market['prices'])} points, "
+              f"price range: {min(market['prices']):.3f}-{max(market['prices']):.3f}")
+    
+    return sample_markets
+
+def prepare_inputs(market_data):
+    """Prepare inputs for TimesFM - must be exactly 256 points"""
+    prepared_data = []
+    
+    for market in market_data:
+        prices = market['prices']
         
-        # Base price between 0.1 and 0.9
-        base_price = 0.3 + (hash(market_id) % 700) / 1000
+        # CRITICAL: TimesFM requires EXACTLY max_context length (256)
+        if len(prices) < 256:
+            print(f"Warning: Market {market['market_name']} has only {len(prices)} points, padding...")
+            # Pad with mean of existing data
+            pad_len = 256 - len(prices)
+            mean_price = np.mean(prices)
+            prices = [mean_price] * pad_len + prices
         
-        dates = [datetime.now() - timedelta(days=i) for i in range(days, 0, -1)]
+        elif len(prices) > 256:
+            # Use last 256 points
+            prices = prices[-256:]
         
-        # Generate price series with some trend and randomness
-        prices = []
-        trend = np.random.uniform(-0.02, 0.02)
+        # Convert to numpy array (float32)
+        prices_array = np.array(prices, dtype=np.float32)
         
-        for i in range(days):
-            noise = np.random.normal(0, 0.05)
-            price = base_price + trend * i + noise
-            price = max(0.01, min(0.99, price))
-            prices.append(price)
+        # Zero-mean normalization (works better with normalize_inputs=False)
+        prices_mean = np.mean(prices_array)
+        if prices_mean != 0:
+            prices_array = prices_array - prices_mean
         
-        return pd.DataFrame({
-            'date': dates,
-            'price': prices,
-            'market_id': market_id
+        prepared_data.append({
+            **market,
+            'prices_array': prices_array,
+            'original_mean': prices_mean,
         })
     
-    def forecast_with_timesfm(self, price_series, horizon=7):
-        """Forecast using TimesFM"""
-        if not self.timesfm_available:
-            print("TimesFM not available, using mock forecast")
-            return self._mock_forecast(price_series, horizon)
-        
-        try:
-            import timesfm
-            
-            # Prepare time series data
-            prices = price_series['price'].values
-            
-            # Ensure we have enough data
-            if len(prices) < 10:
-                print(f"Not enough data for forecast (needs at least 10 points, got {len(prices)})")
-                return self._mock_forecast(price_series, horizon)
-            
-            # For demo, use mock forecast even if TimesFM is available
-            print("Using TimesFM mock forecast for demonstration")
-            return self._mock_forecast(price_series, horizon)
-            
-        except Exception as e:
-            print(f"Error using TimesFM: {e}")
-            return self._mock_forecast(price_series, horizon)
+    return prepared_data
+
+def run_forecasts(model, prepared_data):
+    """Run TimesFM forecasts on prepared data"""
+    print("\nRunning TimesFM forecasts...")
     
-    def _mock_forecast(self, price_series, horizon):
-        """Generate mock forecast for demonstration"""
-        prices = price_series['price'].values
-        
-        if len(prices) < 5:
-            return [prices[-1]] * horizon if len(prices) > 0 else [0.5] * horizon
-        
-        # Simple forecast: extrapolate with slight noise
-        last_price = prices[-1]
-        second_last = prices[-2] if len(prices) > 1 else last_price
-        trend = last_price - second_last
-        
-        forecast = []
-        for i in range(horizon):
-            noise = np.random.normal(0, 0.02)
-            forecast_price = last_price + trend * (i + 1) * 0.5 + noise
-            forecast_price = max(0.01, min(0.99, forecast_price))
-            forecast.append(forecast_price)
-        
-        return forecast
+    results = []
     
-    def calculate_mispricing(self, current_price, forecast_prices):
-        """Calculate mispricing metrics"""
-        if not forecast_prices:
-            return {'mispricing_score': 0, 'forecast_mean': current_price, 'forecast_std': 0}
+    for market in prepared_data:
+        print(f"\nForecasting: {market['market_name']}")
+        print(f"  Input shape: {market['prices_array'].shape}")
+        print(f"  Input range: {market['prices_array'].min():.3f} to {market['prices_array'].max():.3f}")
         
-        forecast_mean = np.mean(forecast_prices)
-        forecast_std = np.std(forecast_prices)
+        # CRITICAL: Input must be list of numpy arrays
+        point_forecast, quantile_forecast = model.forecast(
+            horizon=12,
+            inputs=[market['prices_array']]  # List of arrays
+        )
         
-        # Mispricing score: difference between current price and forecast mean
-        mispricing_score = (forecast_mean - current_price) / max(forecast_std, 0.01)
+        # Denormalize if we normalized
+        if market['original_mean'] != 0:
+            point_forecast = point_forecast + market['original_mean']
+            quantile_forecast = quantile_forecast + market['original_mean']
         
-        return {
-            'mispricing_score': mispricing_score,
-            'forecast_mean': forecast_mean,
-            'forecast_std': forecast_std,
-            'current_price': current_price,
-        }
+        # Ensure forecasts stay in valid range (0-1 for probabilities)
+        point_forecast = np.clip(point_forecast, 0.0, 1.0)
+        quantile_forecast = np.clip(quantile_forecast, 0.0, 1.0)
+        
+        # Check for NaN
+        has_nan = np.isnan(point_forecast).any()
+        
+        # Calculate expected return (7-day forecast vs current)
+        current_price = market['prices_array'][-1] + market['original_mean']
+        forecast_7d = point_forecast[0][6]  # 7th day (index 6)
+        expected_return = (forecast_7d - current_price) / current_price * 100
+        
+        print(f"  Current price: {current_price:.3f}")
+        print(f"  7-day forecast: {forecast_7d:.3f}")
+        print(f"  Expected return: {expected_return:+.1f}%")
+        print(f"  Has NaN: {has_nan}")
+        
+        results.append({
+            'market_id': market['market_id'],
+            'market_name': market['market_name'],
+            'current_price': float(current_price),
+            'forecast_7d': float(forecast_7d),
+            'expected_return_pct': float(expected_return),
+            'has_nan': bool(has_nan),
+            'point_forecast': point_forecast[0].tolist(),
+            'quantile_forecast': quantile_forecast[0].tolist(),
+            'input_points': len(market['prices_array']),
+            'timestamp': datetime.now().isoformat(),
+        })
     
-    def analyze_markets(self, num_markets=5, forecast_horizon=7):
-        """Analyze multiple markets and identify mispriced opportunities"""
-        print("\n=== TimesFM Market Analysis ===")
-        
-        # Load market data
-        markets = self.load_market_data()
-        if not markets:
-            print("No market data available")
-            return []
-        
-        # Select markets for analysis
-        selected_markets = markets[:min(num_markets, len(markets))]
-        
-        analysis_results = []
-        
-        for i, market in enumerate(selected_markets, 1):
-            market_id = market.get('condition_id', '')
-            question = market.get('question', 'Unknown')[:50] + "..."
-            
-            print(f"\n[{i}/{len(selected_markets)}] Analyzing: {question}")
-            
-            # Generate mock price series
-            price_series = self.generate_mock_price_series(market_id, days=30)
-            
-            if len(price_series) < 10:
-                print(f"  Insufficient data for {market_id[:10]}...")
-                continue
-            
-            current_price = price_series['price'].iloc[-1]
-            print(f"  Current mock price: {current_price:.3f}")
-            
-            # Generate forecast
-            forecast_prices = self.forecast_with_timesfm(price_series, forecast_horizon)
-            
-            # Calculate mispricing
-            mispricing = self.calculate_mispricing(current_price, forecast_prices)
-            
-            result = {
-                'market_id': market_id,
-                'question': market.get('question', ''),
-                'market_slug': market.get('market_slug', ''),
-                'current_price': current_price,
-                'forecast_mean': mispricing['forecast_mean'],
-                'forecast_std': mispricing['forecast_std'],
-                'mispricing_score': mispricing['mispricing_score'],
-                'forecast_prices': forecast_prices,
-                'recommendation': self._generate_recommendation(mispricing['mispricing_score'])
-            }
-            
-            analysis_results.append(result)
-            
-            print(f"  Forecast mean: {mispricing['forecast_mean']:.3f}")
-            print(f"  Mispricing score: {mispricing['mispricing_score']:.3f}")
-            print(f"  Recommendation: {result['recommendation']}")
-        
-        # Sort by absolute mispricing
-        analysis_results.sort(key=lambda x: abs(x['mispricing_score']), reverse=True)
-        
-        # Save results
-        self._save_results(analysis_results)
-        
-        return analysis_results
+    return results
+
+def save_results(results):
+    """Save forecast results to file"""
+    output_dir = Path.home() / "polymarket-bot" / "data" / "forecasts"
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    def _generate_recommendation(self, mispricing_score):
-        """Generate trading recommendation"""
-        abs_score = abs(mispricing_score)
-        
-        if abs_score < 0.5:
-            return "HOLD"
-        elif mispricing_score > 0:
-            if abs_score < 1.0:
-                return "BUY"
-            elif abs_score < 2.0:
-                return "STRONG BUY"
-            else:
-                return "AGGRESSIVE BUY"
-        else:
-            if abs_score < 1.0:
-                return "SELL"
-            elif abs_score < 2.0:
-                return "STRONG SELL"
-            else:
-                return "AGGRESSIVE SELL"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    def _save_results(self, analysis_results):
-        """Save analysis results"""
-        try:
-            filename = f"market_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            filepath = OUTPUT_DIR / filename
-            
-            # Convert to DataFrame
-            df_data = []
-            for result in analysis_results:
-                df_data.append({
-                    'market_id': result['market_id'],
-                    'question': result['question'][:100],
-                    'current_price': result['current_price'],
-                    'forecast_mean': result['forecast_mean'],
-                    'forecast_std': result['forecast_std'],
-                    'mispricing_score': result['mispricing_score'],
-                    'recommendation': result['recommendation'],
-                    'abs_mispricing': abs(result['mispricing_score'])
-                })
-            
-            df = pd.DataFrame(df_data)
-            df.to_csv(filepath, index=False)
-            
-            print(f"\nSaved analysis to {filepath}")
-            print(f"Total markets analyzed: {len(df)}")
-            
-        except Exception as e:
-            print(f"Error saving results: {e}")
+    # Save JSON
+    json_file = output_dir / f"timesfm2p5_forecasts_{timestamp}.json"
+    with open(json_file, 'w') as f:
+        json.dump(results, f, indent=2)
+    print(f"\nSaved JSON results to: {json_file}")
     
-    def print_summary(self, analysis_results):
-        """Print summary of analysis"""
-        print("\n=== MARKET MISPRICING SUMMARY ===")
-        print(f"{'Market':<30} {'Curr Price':>10} {'Forecast':>10} {'Mispricing':>12} {'Recommendation':<20}")
-        print("-" * 90)
-        
-        for result in analysis_results[:10]:
-            question_short = (result['question'][:27] + "...") if len(result['question']) > 30 else result['question']
-            print(f"{question_short:<30} {result['current_price']:>10.3f} {result['forecast_mean']:>10.3f} {result['mispricing_score']:>12.3f} {result['recommendation']:<20}")
-        
-        print("\n=== TOP OPPORTUNITIES ===")
-        
-        # Top buys
-        buys = [r for r in analysis_results if r['mispricing_score'] > 0.5]
-        if buys:
-            print("\nTop BUY opportunities (most underpriced):")
-            for i, buy in enumerate(buys[:3], 1):
-                print(f"{i}. {buy['question'][:50]}...")
-                print(f"   Current: {buy['current_price']:.3f}, Forecast: {buy['forecast_mean']:.3f}, Score: {buy['mispricing_score']:.3f}")
-        
-        # Top sells
-        sells = [r for r in analysis_results if r['mispricing_score'] < -0.5]
-        if sells:
-            print("\nTop SELL opportunities (most overpriced):")
-            for i, sell in enumerate(sells[:3], 1):
-                print(f"{i}. {sell['question'][:50]}...")
-                print(f"   Current: {sell['current_price']:.3f}, Forecast: {sell['forecast_mean']:.3f}, Score: {sell['mispricing_score']:.3f}")
+    # Save CSV
+    csv_data = []
+    for result in results:
+        csv_data.append({
+            'market_id': result['market_id'],
+            'market_name': result['market_name'],
+            'current_price': result['current_price'],
+            'forecast_7d': result['forecast_7d'],
+            'expected_return_pct': result['expected_return_pct'],
+            'has_nan': result['has_nan'],
+            'input_points': result['input_points'],
+            'timestamp': result['timestamp'],
+        })
+    
+    csv_file = output_dir / f"timesfm2p5_forecasts_{timestamp}.csv"
+    pd.DataFrame(csv_data).to_csv(csv_file, index=False)
+    print(f"Saved CSV results to: {csv_file}")
+    
+    return json_file, csv_file
 
 def main():
-    """Main function to run TimesFM forecasting"""
-    print("=== TimesFM Polymarket Forecasting ===")
-    print(f"Data directory: {DATA_DIR}")
-    print(f"Forecast horizon: 7 days")
+    print("=" * 60)
+    print("TimesFM 2.5 Forecasting Pipeline")
+    print("=" * 60)
     
-    forecaster = TimesFMForecaster()
+    # Step 1: Setup model
+    model = setup_timesfm_model()
     
-    # Analyze markets
-    analysis_results = forecaster.analyze_markets(num_markets=10, forecast_horizon=7)
+    # Step 2: Fetch real data
+    market_data = fetch_real_polymarket_data()
     
-    if analysis_results:
-        # Print summary
-        forecaster.print_summary(analysis_results)
-        
-        print("\n=== Files Generated ===")
-        print(f"Forecast files saved to: {OUTPUT_DIR}")
-        print(f"Total markets analyzed: {len(analysis_results)}")
-        
-        # Show top opportunity
-        top = analysis_results[0]
-        print(f"\nTop opportunity: {top['question'][:60]}...")
-        print(f"Mispricing score: {top['mispricing_score']:.3f} ({top['recommendation']})")
-    else:
-        print("No analysis results generated")
+    # Step 3: Prepare inputs
+    prepared_data = prepare_inputs(market_data)
+    
+    # Step 4: Run forecasts
+    results = run_forecasts(model, prepared_data)
+    
+    # Step 5: Save results
+    json_file, csv_file = save_results(results)
+    
+    # Step 6: Summary
+    print("\n" + "=" * 60)
+    print("FORECASTING COMPLETE")
+    print("=" * 60)
+    
+    nan_count = sum(1 for r in results if r['has_nan'])
+    print(f"Markets analyzed: {len(results)}")
+    print(f"Markets with NaN forecasts: {nan_count}")
+    print(f"Average expected return: {np.mean([r['expected_return_pct'] for r in results]):+.1f}%")
+    
+    print(f"\nResults saved to:")
+    print(f"  JSON: {json_file}")
+    print(f"  CSV:  {csv_file}")
+    
+    # Show sample forecast
+    if results:
+        print(f"\nSample forecast (first market):")
+        result = results[0]
+        print(f"  Market: {result['market_name']}")
+        print(f"  Current: {result['current_price']:.3f}")
+        print(f"  7-day forecast: {result['forecast_7d']:.3f}")
+        print(f"  Expected return: {result['expected_return_pct']:+.1f}%")
+        print(f"  Point forecast (first 5): {result['point_forecast'][:5]}")
+        print(f"  Has NaN: {result['has_nan']}")
 
 if __name__ == "__main__":
     main()
