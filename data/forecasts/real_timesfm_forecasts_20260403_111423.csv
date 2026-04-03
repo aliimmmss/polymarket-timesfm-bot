@@ -1,0 +1,6 @@
+market_id,market_name,price_history_file,current_price,forecast_mean,expected_return_pct,mispricing_score,forecast_values,data_points,input_preview
+0x51e8c8df709aa78f64,Will Iraq win the 2026 FIFA World Cup?,price_history_0x51e8c8_20260403_111410.csv,0.0025,0.0194,674.19,0.338,"[0.0223, 0.0205, 0.0195, 0.0187, 0.0183, 0.0182, 0.0181]",256,"[0.010, ..., 0.028]"
+0x9df006923390474e5c,Lakers vs. Thunder,price_history_0x9df006_20260403_110136.csv,0.0005,0.0419,8279.44,1.852,"[0.0242, 0.0327, 0.0389, 0.0442, 0.0474, 0.0514, 0.0544]",256,"[0.010, ..., 0.010]"
+0xcd836ec4d94b8a4ddc,Will Congo DR win the 2026 FIFA World Cup?,price_history_0xcd836e_20260403_111410.csv,0.0025,0.0153,513.55,0.257,"[0.0158, 0.0152, 0.0148, 0.0149, 0.0152, 0.0155, 0.016]",256,"[0.010, ..., 0.016]"
+0x6d0e09d0f04572d9b1,US forces enter Iran by April 30?,price_history_0x6d0e09_20260403_111409.csv,0.685,0.7058,3.04,0.045,"[0.7181, 0.7133, 0.7092, 0.7057, 0.7018, 0.698, 0.6947]",256,"[0.554, ..., 0.728]"
+0x40b063d0ec332f54c6,Suns vs. Hornets,price_history_0x40b063_20260403_110138.csv,0.0005,0.1052,20941.81,4.684,"[0.1571, 0.1318, 0.1119, 0.0984, 0.0847, 0.0794, 0.0732]",256,"[0.010, ..., 0.202]"

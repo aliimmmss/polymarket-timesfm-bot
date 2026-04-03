@@ -1,0 +1,6 @@
+market_id,market_name,price_history_file,current_price,forecast_mean,expected_return_pct,mispricing_score,forecast_values,data_points,input_preview
+0x9df006923390474e5c,Lakers vs. Thunder,price_history_0x9df006_20260403_110136.csv,0.0005,0.0419,8279.44,1.852,"[0.0242, 0.0327, 0.0389, 0.0442, 0.0474, 0.0514, 0.0544]",256,"[0.010, ..., 0.010]"
+0x40b063d0ec332f54c6,Suns vs. Hornets,price_history_0x40b063_20260403_110138.csv,0.0005,0.1052,20941.81,4.684,"[0.1571, 0.1318, 0.1119, 0.0984, 0.0847, 0.0794, 0.0732]",256,"[0.010, ..., 0.202]"
+0x833cc6faa82931969b,Timberwolves vs. Pistons,price_history_0x833cc6_20260403_110135.csv,0.0005,0.0321,6320.54,1.414,"[0.0195, 0.028, 0.0322, 0.0348, 0.0367, 0.0375, 0.0359]",256,"[0.010, ..., 0.010]"
+0x6d0e09d0f04572d9b1,US forces enter Iran by April 30?,price_history_0x6d0e09_20260403_110137.csv,0.675,0.6952,2.99,0.043,"[0.7073, 0.7025, 0.6985, 0.6951, 0.6913, 0.6875, 0.6842]",256,"[0.546, ..., 0.717]"
+0x250c1689f275f8123a,Spurs vs. Clippers,price_history_0x250c16_20260403_110135.csv,0.945,0.9366,-0.89,-0.037,"[0.9367, 0.9385, 0.9394, 0.9382, 0.9368, 0.9344, 0.9324]",256,"[0.990, ..., 0.936]"
