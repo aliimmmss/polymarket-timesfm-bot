@@ -1,415 +1,196 @@
+#!/usr/bin/env python3
 """
-Polymarket API Client for fetching market data.
-
-This client interacts with Polymarket's GraphQL API to fetch:
-- Market information and metadata
-- Historical price data
-- Real-time order book data
-- Trading volumes and liquidity metrics
+Polymarket CLOB API Client for fetching active markets and price history.
+Data saved to ~/polymarket-bot/data/
 """
 
-import asyncio
+import requests
+import pandas as pd
 import json
+import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
-import httpx
-from dataclasses import dataclass
-import logging
+import os
+from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class Market:
-    """Represents a Polymarket market."""
-    id: str
-    slug: str
-    question: str
-    description: str
-    category: str
-    subcategory: str
-    resolution_source: str
-    resolution_date: datetime
-    created_at: datetime
-    liquidity_usd: float
-    volume_24h_usd: float
-    active: bool
-    
-    
-@dataclass
-class MarketPrice:
-    """Represents market price at a specific time."""
-    timestamp: datetime
-    market_id: str
-    yes_price: float
-    no_price: float
-    yes_volume: float
-    no_volume: float
-    total_volume: float
-    liquidity_usd: float
-    
-    
-@dataclass
-class OrderBook:
-    """Represents market order book."""
-    market_id: str
-    timestamp: datetime
-    yes_bids: List[Dict[str, float]]  # [{price: float, size: float}]
-    yes_asks: List[Dict[str, float]]
-    no_bids: List[Dict[str, float]]
-    no_asks: List[Dict[str, float]]
-
+# Configuration
+BASE_URL = "https://clob.polymarket.com"
+DATA_DIR = Path.home() / "polymarket-bot" / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 class PolymarketClient:
-    """Client for interacting with Polymarket API."""
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Accept": "application/json",
+            "User-Agent": "PolymarketBot/1.0"
+        })
     
-    def __init__(self, api_key: Optional[str] = None, base_url: str = "https://api.polymarket.com"):
-        """
-        Initialize Polymarket client.
-        
-        Args:
-            api_key: Optional API key for authenticated requests
-            base_url: Base URL for Polymarket API
-        """
-        self.api_key = api_key
-        self.base_url = base_url
-        self.graphql_endpoint = f"{base_url}/graphql"
-        self.client = httpx.AsyncClient(
-            timeout=30.0,
-            headers=self._get_headers()
-        )
-        
-    def _get_headers(self) -> Dict[str, str]:
-        """Get headers for API requests."""
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Polymarket-Trading-Bot/0.1.0"
-        }
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        return headers
-    
-    async def fetch_active_markets(self, limit: int = 100, offset: int = 0) -> List[Market]:
-        """
-        Fetch active markets from Polymarket.
-        
-        Args:
-            limit: Maximum number of markets to fetch
-            offset: Pagination offset
-            
-        Returns:
-            List of Market objects
-        """
-        query = """
-        query GetActiveMarkets($limit: Int!, $offset: Int!) {
-          markets(limit: $limit, offset: $offset, where: {active: {_eq: true}}) {
-            id
-            slug
-            question
-            description
-            category
-            subcategory
-            resolutionSource
-            resolutionDate
-            createdAt
-            liquidityUsd
-            volume24hUsd
-            active
-          }
-        }
-        """
-        
-        variables = {"limit": limit, "offset": offset}
-        
+    def get_active_markets(self, limit=50):
+        """Fetch active markets from Polymarket CLOB API"""
         try:
-            response = await self.client.post(
-                self.graphql_endpoint,
-                json={"query": query, "variables": variables}
-            )
+            url = f"{BASE_URL}/markets"
+            params = {
+                "limit": limit,
+                "active": "true",
+                "sort": "volume_desc"
+            }
+            response = self.session.get(url, params=params)
             response.raise_for_status()
             data = response.json()
-            
-            markets = []
-            for market_data in data.get("data", {}).get("markets", []):
-                try:
-                    market = Market(
-                        id=market_data["id"],
-                        slug=market_data["slug"],
-                        question=market_data["question"],
-                        description=market_data.get("description", ""),
-                        category=market_data["category"],
-                        subcategory=market_data.get("subcategory", ""),
-                        resolution_source=market_data["resolutionSource"],
-                        resolution_date=datetime.fromisoformat(market_data["resolutionDate"].replace("Z", "+00:00")),
-                        created_at=datetime.fromisoformat(market_data["createdAt"].replace("Z", "+00:00")),
-                        liquidity_usd=float(market_data.get("liquidityUsd", 0)),
-                        volume_24h_usd=float(market_data.get("volume24hUsd", 0)),
-                        active=market_data["active"]
-                    )
-                    markets.append(market)
-                except (KeyError, ValueError) as e:
-                    logger.warning(f"Error parsing market data: {e}")
-                    continue
-                    
-            logger.info(f"Fetched {len(markets)} active markets")
-            return markets
-            
+            # Return the 'data' field which contains the markets
+            return {
+                'data': data.get('data', []),
+                'total': data.get('count', 0),
+                'next_cursor': data.get('next_cursor')
+            }
         except Exception as e:
-            logger.error(f"Error fetching active markets: {e}")
-            return []
+            print(f"Error fetching markets: {e}")
+            return {'data': [], 'total': 0, 'next_cursor': None}
     
-    async def fetch_market_prices(
-        self, 
-        market_id: str, 
-        start_time: datetime, 
-        end_time: datetime,
-        interval_minutes: int = 5
-    ) -> List[MarketPrice]:
-        """
-        Fetch historical prices for a specific market.
-        
-        Args:
-            market_id: Market ID
-            start_time: Start time for historical data
-            end_time: End time for historical data
-            interval_minutes: Time interval between data points
-            
-        Returns:
-            List of MarketPrice objects
-        """
-        # Note: Polymarket doesn't have a direct historical price endpoint
-        # This would need to use their WebSocket feed or aggregate from trades
-        # For now, we'll implement a placeholder that needs to be filled
-        # with actual data fetching logic
-        
-        logger.warning("Historical price fetching not fully implemented - needs WebSocket integration")
-        return []
-    
-    async def fetch_current_prices(self, market_ids: List[str]) -> Dict[str, MarketPrice]:
-        """
-        Fetch current prices for multiple markets.
-        
-        Args:
-            market_ids: List of market IDs
-            
-        Returns:
-            Dictionary mapping market_id to MarketPrice
-        """
-        query = """
-        query GetMarketPrices($marketIds: [String!]!) {
-          markets(where: {id: {_in: $marketIds}}) {
-            id
-            yesPrice
-            noPrice
-            yesVolume24h
-            noVolume24h
-            totalVolume24h
-            liquidityUsd
-          }
-        }
-        """
-        
-        variables = {"marketIds": market_ids}
-        
+    def get_market_details(self, market_id):
+        """Get detailed information for a specific market"""
         try:
-            response = await self.client.post(
-                self.graphql_endpoint,
-                json={"query": query, "variables": variables}
-            )
+            url = f"{BASE_URL}/markets/{market_id}"
+            response = self.session.get(url)
             response.raise_for_status()
-            data = response.json()
-            
-            prices = {}
-            timestamp = datetime.utcnow()
-            
-            for market_data in data.get("data", {}).get("markets", []):
-                market_id = market_data["id"]
-                prices[market_id] = MarketPrice(
-                    timestamp=timestamp,
-                    market_id=market_id,
-                    yes_price=float(market_data.get("yesPrice", 0)),
-                    no_price=float(market_data.get("noPrice", 0)),
-                    yes_volume=float(market_data.get("yesVolume24h", 0)),
-                    no_volume=float(market_data.get("noVolume24h", 0)),
-                    total_volume=float(market_data.get("totalVolume24h", 0)),
-                    liquidity_usd=float(market_data.get("liquidityUsd", 0))
-                )
-            
-            logger.info(f"Fetched current prices for {len(prices)} markets")
-            return prices
-            
+            return response.json()
         except Exception as e:
-            logger.error(f"Error fetching current prices: {e}")
-            return {}
-    
-    async def fetch_order_book(self, market_id: str) -> Optional[OrderBook]:
-        """
-        Fetch order book for a specific market.
-        
-        Args:
-            market_id: Market ID
-            
-        Returns:
-            OrderBook object or None if error
-        """
-        query = """
-        query GetOrderBook($marketId: String!) {
-          market(id: $marketId) {
-            id
-            yesBids {
-              price
-              size
-            }
-            yesAsks {
-              price
-              size
-            }
-            noBids {
-              price
-              size
-            }
-            noAsks {
-              price
-              size
-            }
-          }
-        }
-        """
-        
-        variables = {"marketId": market_id}
-        
-        try:
-            response = await self.client.post(
-                self.graphql_endpoint,
-                json={"query": query, "variables": variables}
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            market_data = data.get("data", {}).get("market", {})
-            if not market_data:
-                return None
-            
-            return OrderBook(
-                market_id=market_id,
-                timestamp=datetime.utcnow(),
-                yes_bids=market_data.get("yesBids", []),
-                yes_asks=market_data.get("yesAsks", []),
-                no_bids=market_data.get("noBids", []),
-                no_asks=market_data.get("noAsks", [])
-            )
-            
-        except Exception as e:
-            logger.error(f"Error fetching order book for market {market_id}: {e}")
+            print(f"Error fetching market {market_id}: {e}")
             return None
     
-    async def fetch_market_trades(
-        self, 
-        market_id: str, 
-        limit: int = 100
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch recent trades for a market.
-        
-        Args:
-            market_id: Market ID
-            limit: Maximum number of trades to fetch
-            
-        Returns:
-            List of trade dictionaries
-        """
-        query = """
-        query GetMarketTrades($marketId: String!, $limit: Int!) {
-          trades(
-            where: {marketId: {_eq: $marketId}}
-            order_by: {timestamp: desc}
-            limit: $limit
-          ) {
-            id
-            timestamp
-            side
-            price
-            amount
-            taker
-            maker
-          }
-        }
-        """
-        
-        variables = {"marketId": market_id, "limit": limit}
-        
+    def get_order_book(self, market_id):
+        """Get order book (bids/asks) for a market"""
         try:
-            response = await self.client.post(
-                self.graphql_endpoint,
-                json={"query": query, "variables": variables}
-            )
+            url = f"{BASE_URL}/markets/{market_id}/book"
+            response = self.session.get(url)
             response.raise_for_status()
-            data = response.json()
-            
-            return data.get("data", {}).get("trades", [])
-            
+            return response.json()
         except Exception as e:
-            logger.error(f"Error fetching trades for market {market_id}: {e}")
+            print(f"Error fetching order book for {market_id}: {e}")
+            return None
+    
+    def get_price_history(self, market_id, hours=24):
+        """Get price history for a market (simplified - using order book snapshots)"""
+        try:
+            # For now, we'll use the current order book as a snapshot
+            # In a real implementation, you'd want to fetch historical trades
+            order_book = self.get_order_book(market_id)
+            if not order_book:
+                return []
+            
+            # Extract best bid and ask prices
+            bids = order_book.get('bids', [])
+            asks = order_book.get('asks', [])
+            
+            if bids and asks:
+                best_bid = float(bids[0]['price']) if bids else 0
+                best_ask = float(asks[0]['price']) if asks else 0
+                mid_price = (best_bid + best_ask) / 2 if best_bid and best_ask else best_ask or best_bid
+                
+                return [{
+                    'timestamp': datetime.now().isoformat(),
+                    'market_id': market_id,
+                    'bid': best_bid,
+                    'ask': best_ask,
+                    'mid_price': mid_price,
+                    'bid_size': float(bids[0]['size']) if bids else 0,
+                    'ask_size': float(asks[0]['size']) if asks else 0
+                }]
+            return []
+        except Exception as e:
+            print(f"Error fetching price history for {market_id}: {e}")
             return []
     
-    async def close(self):
-        """Close the HTTP client."""
-        await self.client.aclose()
+    def save_markets_to_csv(self, markets, filename="markets.csv"):
+        """Save markets data to CSV"""
+        try:
+            df = pd.DataFrame(markets)
+            filepath = DATA_DIR / filename
+            df.to_csv(filepath, index=False)
+            print(f"Saved {len(markets)} markets to {filepath}")
+            return filepath
+        except Exception as e:
+            print(f"Error saving markets to CSV: {e}")
+            return None
     
-    async def __aenter__(self):
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
+    def save_price_history(self, price_data, market_id, filename=None):
+        """Save price history to CSV"""
+        try:
+            if not filename:
+                filename = f"price_history_{market_id[:8]}.csv"
+            
+            df = pd.DataFrame(price_data)
+            filepath = DATA_DIR / filename
+            df.to_csv(filepath, index=False)
+            print(f"Saved {len(price_data)} price points to {filepath}")
+            return filepath
+        except Exception as e:
+            print(f"Error saving price history: {e}")
+            return None
 
 
-# Synchronous wrapper for convenience
-class SyncPolymarketClient:
-    """Synchronous wrapper for PolymarketClient."""
+def main():
+    """Main function to fetch and save Polymarket data"""
+    print("=== Polymarket Data Collection ===")
+    print(f"Data directory: {DATA_DIR}")
     
-    def __init__(self, api_key: Optional[str] = None, base_url: str = "https://api.polymarket.com"):
-        self.api_key = api_key
-        self.base_url = base_url
-        
-    def fetch_active_markets(self, limit: int = 100, offset: int = 0) -> List[Market]:
-        """Synchronous version of fetch_active_markets."""
-        async def _fetch():
-            async with PolymarketClient(self.api_key, self.base_url) as client:
-                return await client.fetch_active_markets(limit, offset)
-        
-        return asyncio.run(_fetch())
+    client = PolymarketClient()
     
-    def fetch_current_prices(self, market_ids: List[str]) -> Dict[str, MarketPrice]:
-        """Synchronous version of fetch_current_prices."""
-        async def _fetch():
-            async with PolymarketClient(self.api_key, self.base_url) as client:
-                return await client.fetch_current_prices(market_ids)
+    # Fetch active markets
+    print("\nFetching active markets...")
+    response = client.get_active_markets(limit=20)
+    
+    # Extract markets from response
+    markets = response.get('data', [])
+    total_markets = response.get('total', len(markets))
+    print(f"API Response: {len(markets)} markets out of {total_markets} total")
+    
+    if not markets:
+        print("No markets found!")
+        return
+    
+    print(f"Found {len(markets)} active markets")
+    
+    # Save markets data
+    markets_file = client.save_markets_to_csv(markets)
+    
+    # Select top 3 markets for detailed data collection
+    selected_markets = markets[:3]
+    
+    all_price_data = []
+    for i, market in enumerate(selected_markets, 1):
+        market_id = market.get('id', '')
+        if not market_id:
+            continue
         
-        return asyncio.run(_fetch())
+        print(f"\n[{i}/{len(selected_markets)}] Processing market: {market.get('question', market_id[:20])}")
+        
+        # Get market details
+        details = client.get_market_details(market_id)
+        if details:
+            print(f"  Status: {details.get('status', 'Unknown')}")
+            print(f"  Volume: ${details.get('volume', 0):.2f}")
+        
+        # Get price history (current snapshot)
+        price_data = client.get_price_history(market_id)
+        if price_data:
+            all_price_data.extend(price_data)
+            
+            # Save individual market price history
+            client.save_price_history(price_data, market_id)
+        
+        time.sleep(0.5)  # Rate limiting
+    
+    # Save combined price data
+    if all_price_data:
+        combined_file = DATA_DIR / "combined_price_data.csv"
+        pd.DataFrame(all_price_data).to_csv(combined_file, index=False)
+        print(f"\nSaved combined price data to {combined_file}")
+    
+    print("\n=== Data Collection Complete ===")
+    print(f"Total markets available: {total_markets}")
+    print(f"Detailed data collected for: {len(selected_markets)} markets")
 
 
 if __name__ == "__main__":
-    # Example usage
-    import asyncio
-    
-    async def example():
-        client = PolymarketClient()
-        
-        # Fetch active markets
-        markets = await client.fetch_active_markets(limit=10)
-        print(f"Fetched {len(markets)} markets")
-        
-        if markets:
-            # Fetch prices for first 3 markets
-            market_ids = [m.id for m in markets[:3]]
-            prices = await client.fetch_current_prices(market_ids)
-            print(f"Fetched prices for {len(prices)} markets")
-            
-            # Fetch order book for first market
-            order_book = await client.fetch_order_book(markets[0].id)
-            if order_book:
-                print(f"Order book has {len(order_book.yes_bids)} YES bids")
-        
-        await client.close()
-    
-    asyncio.run(example())
+    main()
