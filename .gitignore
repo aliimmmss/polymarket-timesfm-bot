@@ -38,16 +38,9 @@ ENV/
 *~
 
 # Data files (generated at runtime)
-data/*.csv
-data/*.json
-data/raw/*
-data/processed/*
-data/forecasts/*
+data/forecasts/*.json
+data/logs/*.log
 data/price_history/*
-data/real_data/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-!data/forecasts/.gitkeep
 
 # Logs
 *.log

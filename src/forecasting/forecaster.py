@@ -1,4 +1,4 @@
-"""TimesFM 2.5 wrapper for Polymarket price forecasting."""
+"""TimesFM 2.5 wrapper for BTC price forecasting."""
 
 import logging
 import numpy as np
@@ -82,7 +82,7 @@ class TimesFMForecaster:
             return {
                 'point_forecast': vals,
                 'quantile_forecast': quantile.tolist() if quantile is not None else [],
-                'has_nan': has_nan
+                'has_nan': bool(has_nan)
             }
             
         except Exception as e:

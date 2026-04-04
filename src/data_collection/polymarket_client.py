@@ -1,85 +1,122 @@
-"""Polymarket API client using real Gamma + CLOB APIs."""
+"""Polymarket client for BTC 15-minute markets using Gamma + CLOB APIs."""
 
 import requests
+import time
+import math
+import json
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-class PolymarketClient:
-    """Client for Polymarket Gamma and CLOB APIs."""
+class PolymarketBTCClient:
+    """Client for Polymarket BTC 15-minute Up/Down markets."""
     
     GAMMA_URL = "https://gamma-api.polymarket.com"
     CLOB_URL = "https://clob.polymarket.com"
     
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Accept": "application/json",
-            "User-Agent": "PolymarketBot/2.0"
-        })
-    
-    def get_active_markets(self, limit=50):
-        """Fetch active markets from Gamma API sorted by volume."""
-        try:
-            resp = self.session.get(
-                f"{self.GAMMA_URL}/markets",
-                params={
-                    'limit': limit,
-                    'active': 'true',
-                    'closed': 'false',
-                    'order': 'volume24hr',
-                    'ascending': 'false',
-                },
-                timeout=10
-            )
-            resp.raise_for_status()
-            markets = resp.json()
-            logger.info(f"Fetched {len(markets)} active markets")
-            return markets
-        except Exception as e:
-            logger.error(f"Failed to fetch markets: {e}")
-            return []
-    
-    def get_price_history(self, token_id, interval='max', fidelity=60):
-        """Fetch price history from CLOB API.
+    def find_active_btc_markets(self, count=3):
+        """Find current and upcoming BTC 15-min markets.
         
         Args:
-            token_id: The CLOB token ID (from clobTokenIds field)
-            interval: Time interval ('max', 'hour', 'day')
-            fidelity: Data point frequency (1, 60, etc.)
+            count: Number of markets to find (default 3)
         
         Returns:
-            List of dicts with 'p' (price) and 't' (timestamp) keys
+            List of market dicts with question, outcomePrices, clobTokenIds, etc.
         """
-        try:
-            resp = self.session.get(
-                f"{self.CLOB_URL}/prices-history",
-                params={
-                    'market': token_id,
-                    'interval': interval,
-                    'fidelity': fidelity,
-                },
+        now = time.time()
+        current_ts = math.floor(now / 900) * 900
+        markets = []
+        
+        for i in range(count):
+            ts = current_ts + (i * 900)
+            slug = f"btc-updown-15m-{ts}"
+            
+            resp = requests.get(
+                f"{self.GAMMA_URL}/markets",
+                params={'slug': slug},
                 timeout=10
             )
-            resp.raise_for_status()
-            data = resp.json()
-            history = data.get('history', [])
-            logger.info(f"Fetched {len(history)} price points for token {token_id[:16]}...")
-            return history
-        except Exception as e:
-            logger.error(f"Failed to fetch price history for {token_id}: {e}")
-            return []
+            
+            if resp.status_code == 200 and resp.json():
+                m = resp.json()[0]
+                if m.get('active') and not m.get('closed'):
+                    # Parse outcomePrices if needed
+                    if isinstance(m.get('outcomePrices'), str):
+                        m['outcomePrices'] = json.loads(m['outcomePrices'])
+                    if isinstance(m.get('clobTokenIds'), str):
+                        m['clobTokenIds'] = json.loads(m['clobTokenIds'])
+                    markets.append(m)
+                    logger.info(f"Found market: {m['question']} (Up: {m['outcomePrices'][0]})")
+        
+        return markets
     
-    def get_order_book(self, condition_id):
-        """Fetch current order book for a market."""
-        try:
-            resp = self.session.get(
-                f"{self.CLOB_URL}/markets/{condition_id}/book",
+    def get_market_orderbook(self, token_id):
+        """Get full orderbook for a token.
+        
+        Args:
+            token_id: CLOB token ID
+        
+        Returns:
+            Dict with bids, asks, etc.
+        """
+        resp = requests.get(
+            f"{self.CLOB_URL}/book",
+            params={'token_id': token_id},
+            timeout=10
+        )
+        resp.raise_for_status()
+        return resp.json()
+    
+    def get_market_price(self, token_id):
+        """Get midpoint price for a token.
+        
+        Args:
+            token_id: CLOB token ID
+        
+        Returns:
+            Midpoint price (0-1)
+        """
+        resp = requests.get(
+            f"{self.CLOB_URL}/midpoint",
+            params={'token_id': token_id},
+            timeout=10
+        )
+        if resp.status_code == 200:
+            return float(resp.json().get('mid', 0.5))
+        return None
+    
+    def get_resolved_btc_markets(self, limit=20):
+        """Get recently resolved BTC 15-min markets for backtesting.
+        
+        Args:
+            limit: Max number of markets to return
+        
+        Returns:
+            List of resolved market dicts
+        """
+        now = time.time()
+        current_ts = math.floor(now / 900) * 900
+        results = []
+        
+        # Look back at past windows
+        for i in range(1, limit + 1):
+            ts = current_ts - (i * 900)
+            slug = f"btc-updown-15m-{ts}"
+            
+            resp = requests.get(
+                f"{self.GAMMA_URL}/markets",
+                params={'slug': slug},
                 timeout=10
             )
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.error(f"Failed to fetch order book for {condition_id}: {e}")
-            return None
+            
+            if resp.status_code == 200 and resp.json():
+                m = resp.json()[0]
+                if m.get('closed'):
+                    if isinstance(m.get('outcomePrices'), str):
+                        m['outcomePrices'] = json.loads(m['outcomePrices'])
+                    if isinstance(m.get('clobTokenIds'), str):
+                        m['clobTokenIds'] = json.loads(m['clobTokenIds'])
+                    results.append(m)
+        
+        return results

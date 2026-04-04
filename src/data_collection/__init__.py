@@ -1,5 +1,6 @@
-"""Data collection module for Polymarket Trading Bot."""
+"""Data collection module for BTC 15-min market bot."""
 
-from .polymarket_client import PolymarketClient
+from .btc_price_fetcher import BTCPriceFetcher
+from .polymarket_client import PolymarketBTCClient
 
-__all__ = ["PolymarketClient"]
+__all__ = ["BTCPriceFetcher", "PolymarketBTCClient"]
