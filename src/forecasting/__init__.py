@@ -1,5 +1,6 @@
 """Forecasting module for TimesFM-based price predictions."""
 
-from .timesfm_forecaster import TimesFMForecaster
+from .forecaster import TimesFMForecaster
+from .signal_generator import SignalGenerator
 
-__all__ = ["TimesFMForecaster"]
+__all__ = ["TimesFMForecaster", "SignalGenerator"]
