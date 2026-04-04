@@ -29,6 +29,7 @@ ENV/
 .env
 .env.local
 .env.*.local
+config/env
 
 # IDE
 .idea/
@@ -41,6 +42,7 @@ ENV/
 data/forecasts/*.json
 data/logs/*.log
 data/price_history/*
+data/observations/*.csv
 
 # Logs
 *.log
@@ -57,4 +59,10 @@ htmlcov/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Research repos (external, don't commit)
 research_repos/
+
+# State files
+state.json
+*.state

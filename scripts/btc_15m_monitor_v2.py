@@ -1,0 +1,771 @@
+#!/usr/bin/env python3
+"""BTC 15-Minute Market Monitor V2 - Enhanced with WebSocket and Indicators.
+
+CHANGES FROM V1:
+1. Uses Binance WebSocket for real-time BTC price (no REST polling)
+2. Calculates CVD + OBI + Trend Score from WebSocket data
+3. Enhanced strategy signals (A, B, C) with indicator confirmation
+4. PTB from Polymarket API as primary source (CoinGecko fallback)
+5. PTB never caches to 0.0 (Bug 2b fix)
+6. Clean output, no ANSI codes in non-terminal (Bug 2c fix)
+7. Consistent CSV format with DictWriter (Bug 2d fix)
+8. DRY_RUN mode by default for safety
+
+Based on research from:
+- polymarket-bot (Chinese) - trading logic
+- polymarket-assistant-tool - WebSocket and indicators
+"""
+
+import argparse
+import csv
+import json
+import logging
+import os
+import sys
+import time
+from collections import deque
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+# Add parent to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import requests
+
+# Try imports with graceful fallback
+try:
+    from src.data_collection.btc_websocket import BinanceBTCWebSocket
+    HAS_WEBSOCKET = True
+except ImportError:
+    HAS_WEBSOCKET = False
+    print("Warning: websocket-client not installed, will use REST polling")
+
+try:
+    from src.analysis.indicators import TrendScorer
+    HAS_INDICATORS = True
+except ImportError:
+    HAS_INDICATORS = False
+    print("Warning: indicators not available")
+
+try:
+    from src.trading.order_executor import OrderExecutor
+    HAS_EXECUTOR = True
+except ImportError:
+    HAS_EXECUTOR = False
+
+try:
+    from src.trading.stop_loss import StopLossManager
+    HAS_STOP_LOSS = True
+except ImportError:
+    HAS_STOP_LOSS = False
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+)
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+GAMMA_API = "https://gamma-api.polymarket.com"
+CLOB_API = "https://clob.polymarket.com"
+CRYPTO_PRICE_API = "https://polymarket.com/api/crypto/crypto-price"
+COINGECKO_API = "https://api.coingecko.com/api/v3"
+
+# Strategy thresholds (can be overridden via CLI)
+SIGNAL_A_GAP = 20.0      # $20+ gap
+SIGNAL_A_MAX_PRICE = 0.55
+SIGNAL_A_MIN_TIME = 300  # 5 minutes
+
+SIGNAL_B_GAP = 50.0      # $50+ gap
+SIGNAL_B_MAX_PRICE = 0.95
+SIGNAL_B_MAX_TIME = 180  # 3 minutes
+
+SIGNAL_C_CVD = 50.0      # Strong CVD
+SIGNAL_C_OBI = 0.30      # Strong OBI
+SIGNAL_C_MAX_PRICE = 0.50
+
+# Safety settings
+DRY_RUN = True
+MAX_ORDER_SIZE = 5.0
+
+
+# ============================================================================
+# DATA CLASSES
+# ============================================================================
+
+@dataclass
+class Observation:
+    """Single market observation data point."""
+    timestamp: str
+    btc_price: float
+    ptb: float
+    ptb_source: str
+    gap: float
+    up_token_price: float
+    down_token_price: float
+    time_remaining_sec: float
+    cvd_1m: float
+    cvd_5m: float
+    obi: float
+    trend_score: float
+    signal_a: bool
+    signal_b: bool
+    signal_c: bool
+    market_slug: str
+    market_question: str
+
+
+@dataclass
+class Market:
+    """Polymarket market data."""
+    slug: str
+    question: str
+    up_token_id: str
+    down_token_id: str
+    window_start: int
+    window_end: int
+    active: bool
+
+
+# ============================================================================
+# PTB FETCHING (Bug 2b fix - never cache to 0.0)
+# ============================================================================
+
+def get_ptb_from_polymarket(window_start_ts: int) -> Optional[Tuple[float, str]]:
+    """Get PTB from Polymarket crypto-price API.
+    
+    Args:
+        window_start_ts: Unix timestamp of window start
+    
+    Returns:
+        Tuple of (price, source) or None if failed
+    """
+    try:
+        # Polymarket crypto-price API
+        params = {
+            'symbol': 'BTC',
+            'eventStartTime': window_start_ts,
+            'variant': 'fifteen',
+        }
+        
+        resp = requests.get(
+            CRYPTO_PRICE_API,
+            params=params,
+            timeout=10
+        )
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            if 'price' in data and data['price'] > 0:
+                return (float(data['price']), 'polymarket-api')
+        
+        logger.warning(f"Polymarket API returned invalid: {resp.status_code}")
+        return None
+        
+    except Exception as e:
+        logger.warning(f"Polymarket PTB API failed: {e}")
+        return None
+
+
+def get_ptb_from_coingecko(window_start_ts: int) -> Optional[Tuple[float, str]]:
+    """Get PTB from CoinGecko historical API.
+    
+    Fallback when Polymarket API unavailable.
+    
+    Args:
+        window_start_ts: Unix timestamp of window start
+    
+    Returns:
+        Tuple of (price, source) or None if failed
+    """
+    try:
+        # CoinGecko historical price
+        end_ts = window_start_ts + 60  # Small window around start
+        url = f"{COINGECKO_API}/coins/bitcoin/market_chart/range"
+        
+        resp = requests.get(
+            url,
+            params={
+                'vs_currency': 'usd',
+                'from': window_start_ts - 60,
+                'to': end_ts,
+            },
+            timeout=15
+        )
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            prices = data.get('prices', [])
+            
+            if prices:
+                # Find closest price to window start
+                closest = min(
+                    prices,
+                    key=lambda p: abs(p[0]/1000 - window_start_ts)
+                )
+                price = closest[1]
+                
+                if price > 0:
+                    return (price, 'coingecko')
+        
+        logger.warning(f"CoinGecko returned invalid data")
+        return None
+        
+    except Exception as e:
+        logger.warning(f"CoinGecko PTB fetch failed: {e}")
+        return None
+
+
+def get_ptb(window_start_ts: int, cached_ptb: Optional[float] = None) -> Tuple[float, str]:
+    """Get Price To Beat with fallback chain.
+    
+    Bug 2b fix: Never return or cache 0.0.
+    
+    Args:
+        window_start_ts: Unix timestamp of window start
+        cached_ptb: Previously cached PTB (if any)
+    
+    Returns:
+        Tuple of (price, source)
+    """
+    # Try Polymarket API first
+    result = get_ptb_from_polymarket(window_start_ts)
+    if result and result[0] > 0:
+        return result
+    
+    # Fallback to CoinGecko
+    result = get_ptb_from_coingecko(window_start_ts)
+    if result and result[0] > 0:
+        return result
+    
+    # Use cached value if valid (NOT 0.0)
+    if cached_ptb and cached_ptb > 0:
+        logger.warning(f"Using cached PTB: ${cached_ptb:.2f}")
+        return (cached_ptb, 'cached')
+    
+    # All sources failed - this is an error condition
+    logger.error("All PTB sources failed, cannot monitor this window")
+    return (0.0, 'failed')
+
+
+# ============================================================================
+# MARKET DISCOVERY
+# ============================================================================
+
+def find_active_market() -> Optional[Market]:
+    """Find current active BTC 15-minute market.
+    
+    Returns:
+        Market object or None
+    """
+    now = time.time()
+    current_ts = int(now // 900) * 900  # Floor to 15-min boundary
+    slug = f"btc-updown-15m-{current_ts}"
+    
+    try:
+        resp = requests.get(
+            f"{GAMMA_API}/markets",
+            params={'slug': slug},
+            timeout=10
+        )
+        
+        if resp.status_code == 200 and resp.json():
+            m = resp.json()[0]
+            
+            if m.get('active') and not m.get('closed'):
+                # Parse token IDs
+                if isinstance(m.get('clobTokenIds'), str):
+                    token_ids = json.loads(m['clobTokenIds'])
+                else:
+                    token_ids = m.get('clobTokenIds', [])
+                
+                return Market(
+                    slug=m.get('slug', slug),
+                    question=m.get('question', ''),
+                    up_token_id=token_ids[0] if len(token_ids) > 0 else '',
+                    down_token_id=token_ids[1] if len(token_ids) > 1 else '',
+                    window_start=current_ts,
+                    window_end=current_ts + 900,
+                    active=True,
+                )
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Market discovery failed: {e}")
+        return None
+
+
+def get_token_prices(market: Market) -> Tuple[float, float]:
+    """Get Up and Down token prices from CLOB API.
+    
+    Args:
+        market: Market object
+    
+    Returns:
+        Tuple of (up_price, down_price)
+    """
+    try:
+        # Get midpoint prices
+        up_resp = requests.get(
+            f"{CLOB_API}/midpoint",
+            params={'token_id': market.up_token_id},
+            timeout=5
+        )
+        down_resp = requests.get(
+            f"{CLOB_API}/midpoint",
+            params={'token_id': market.down_token_id},
+            timeout=5
+        )
+        
+        up_price = 0.5
+        down_price = 0.5
+        
+        if up_resp.status_code == 200:
+            up_price = float(up_resp.json().get('mid', 0.5))
+        if down_resp.status_code == 200:
+            down_price = float(down_resp.json().get('mid', 0.5))
+        
+        return up_price, down_price
+        
+    except Exception as e:
+        logger.warning(f"Token price fetch failed: {e}")
+        return 0.5, 0.5
+
+
+# ============================================================================
+# SIGNAL DETECTION
+# ============================================================================
+
+def check_signals(
+    gap: float,
+    up_price: float,
+    time_remaining: float,
+    cvd_5m: float,
+    obi: float,
+) -> Tuple[bool, bool, bool]:
+    """Check for trading signals.
+    
+    Signal A: Token Price Disagreement + CVD confirms
+    - Gap >= $20
+    - Up price < 0.55
+    - Time remaining > 5 minutes
+    - CVD positive (buying pressure)
+    
+    Signal B: Late Window Convergence
+    - Gap >= $50
+    - Up price < 0.95
+    - Time remaining < 3 minutes
+    
+    Signal C: Strong Momentum + Mispricing
+    - CVD >= threshold (strong buying)
+    - OBI >= threshold (order book bullish)
+    - Up price < 0.50 (cheap)
+    - Time remaining > 5 minutes
+    
+    Returns:
+        Tuple of (signal_a, signal_b, signal_c)
+    """
+    signal_a = (
+        gap >= SIGNAL_A_GAP and
+        up_price < SIGNAL_A_MAX_PRICE and
+        time_remaining > SIGNAL_A_MIN_TIME and
+        cvd_5m > 0  # CVD confirms buying
+    )
+    
+    signal_b = (
+        gap >= SIGNAL_B_GAP and
+        up_price < SIGNAL_B_MAX_PRICE and
+        time_remaining < SIGNAL_B_MAX_TIME
+    )
+    
+    signal_c = (
+        abs(cvd_5m) >= SIGNAL_C_CVD and
+        obi >= SIGNAL_C_OBI and
+        up_price < SIGNAL_C_MAX_PRICE and
+        time_remaining > SIGNAL_A_MIN_TIME
+    )
+    
+    return signal_a, signal_b, signal_c
+
+
+# ============================================================================
+# CSV LOGGING (Bug 2d fix - consistent format)
+# ============================================================================
+
+class ObservationLogger:
+    """CSV logger with consistent format."""
+    
+    FIELDNAMES = [
+        'timestamp', 'btc_price', 'ptb', 'ptb_source', 'gap',
+        'up_token_price', 'down_token_price', 'time_remaining_sec',
+        'cvd_1m', 'cvd_5m', 'obi', 'trend_score',
+        'signal_a', 'signal_b', 'signal_c',
+        'market_slug', 'market_question',
+    ]
+    
+    def __init__(self, log_dir: str):
+        """Initialize logger.
+        
+        Args:
+            log_dir: Directory for CSV files
+        """
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Daily CSV file
+        date_str = datetime.now().strftime('%Y%m%d')
+        self.csv_path = self.log_dir / f"observations_{date_str}.csv"
+        
+        self.csv_file = None
+        self.writer = None
+        self._init_csv()
+    
+    def _init_csv(self):
+        """Initialize CSV file with header."""
+        file_exists = self.csv_path.exists()
+        
+        self.csv_file = open(self.csv_path, 'a', newline='')
+        self.writer = csv.DictWriter(
+            self.csv_file,
+            fieldnames=self.FIELDNAMES
+        )
+        
+        if not file_exists:
+            self.writer.writeheader()
+            self.csv_file.flush()
+            logger.info(f"Created CSV: {self.csv_path}")
+    
+    def log(self, obs: Observation):
+        """Log an observation."""
+        if self.writer:
+            self.writer.writerow(asdict(obs))
+            self.csv_file.flush()
+    
+    def close(self):
+        """Close CSV file."""
+        if self.csv_file:
+            self.csv_file.close()
+
+
+# ============================================================================
+# DISPLAY (Bug 2c fix - no ANSI in non-terminal)
+# ============================================================================
+
+def format_display(
+    market: Market,
+    btc_price: float,
+    ptb: float,
+    gap: float,
+    up_price: float,
+    down_price: float,
+    time_remaining: float,
+    cvd_1m: float,
+    cvd_5m: float,
+    obi: float,
+    trend_score: float,
+    signal_a: bool,
+    signal_b: bool,
+    signal_c: bool,
+    dry_run: bool = True,
+) -> str:
+    """Format display output (no ANSI codes).
+    
+    Returns:
+        Formatted string for display
+    """
+    lines = [
+        "=" * 60,
+        "BTC 15-MIN MONITOR V2",
+        "=" * 60,
+        f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC",
+        f"Market: {market.question[:50]}...",
+        f"Window: {datetime.fromtimestamp(market.window_start, tz=timezone.utc).strftime('%H:%M:%S')} - {datetime.fromtimestamp(market.window_end, tz=timezone.utc).strftime('%H:%M:%S')} UTC",
+        "",
+        f"PTB:  ${ptb:,.2f} (source: {market.slug[:30] if market.slug else 'unknown'})",
+        f"BTC:  ${btc_price:,.2f}",
+        f"GAP:  ${gap:+,.2f}",
+        "",
+        f"Up Token:   ${up_price:.3f} ({up_price*100:.1f}%)",
+        f"Down Token: ${down_price:.3f} ({down_price*100:.1f}%)",
+        "",
+        f"Time Remaining: {int(time_remaining//60)}:{int(time_remaining%60):02d}",
+        "",
+        "INDICATORS:",
+        f"  CVD 1m: ${cvd_1m:+,.1f}",
+        f"  CVD 5m: ${cvd_5m:+,.1f}",
+        f"  OBI:    {obi:+.2f}",
+        f"  Score:  {trend_score:+.0f}",
+        "",
+        "SIGNALS:",
+    ]
+    
+    if signal_a:
+        lines.append("  [A] Token Disagreement + CVD confirms - BUY UP")
+    else:
+        lines.append("  [ ] Signal A: No")
+    
+    if signal_b:
+        lines.append("  [B] Late Window Convergence - BUY UP")
+    else:
+        lines.append("  [ ] Signal B: No")
+    
+    if signal_c:
+        lines.append("  [C] Strong Momentum + Mispricing - BUY UP")
+    else:
+        lines.append("  [ ] Signal C: No")
+    
+    lines.append("")
+    if dry_run:
+        lines.append(f"DRY RUN MODE - No orders will be placed")
+    
+    lines.append("=" * 60)
+    
+    return "\n".join(lines)
+
+
+# ============================================================================
+# MAIN MONITOR LOOP
+# ============================================================================
+
+def run_monitor(
+    duration: int = 300,
+    interval: float = 5.0,
+    dry_run: bool = True,
+    log_dir: str = "data/observations",
+):
+    """Run the V2 monitor.
+    
+    Args:
+        duration: Maximum run time in seconds (0 = unlimited)
+        interval: Polling interval in seconds
+        dry_run: If True, don't execute trades
+        log_dir: Directory for CSV logs
+    """
+    logger.info(f"Starting BTC 15-min Monitor V2")
+    logger.info(f"Duration: {duration}s, Interval: {interval}s, Dry Run: {dry_run}")
+    
+    # Initialize components
+    csv_logger = ObservationLogger(log_dir)
+    
+    # WebSocket for BTC data
+    ws = None
+    if HAS_WEBSOCKET:
+        ws = BinanceBTCWebSocket()
+        ws.start()
+        logger.info("Binance WebSocket started")
+        time.sleep(2)  # Wait for initial data
+    
+    # Indicator calculator
+    scorer = TrendScorer() if HAS_INDICATORS else None
+    
+    # Order executor (dry run by default)
+    executor = None
+    if HAS_EXECUTOR:
+        executor = OrderExecutor(dry_run=dry_run)
+    
+    # Stop loss manager
+    stop_loss = None
+    if HAS_STOP_LOSS:
+        stop_loss = StopLossManager()
+    
+    # Market tracking
+    current_market = None
+    cached_ptb = None
+    start_time = time.time()
+    
+    try:
+        while True:
+            elapsed = time.time() - start_time
+            if duration > 0 and elapsed >= duration:
+                logger.info(f"Duration reached ({duration}s), stopping")
+                break
+            
+            # Find active market
+            market = find_active_market()
+            if not market:
+                logger.info("No active market found, waiting...")
+                time.sleep(interval)
+                continue
+            
+            # Check if market changed
+            if current_market is None or market.slug != current_market.slug:
+                logger.info(f"New market: {market.slug}")
+                current_market = market
+                # Get PTB for new window
+                ptb, ptb_source = get_ptb(market.window_start)
+                
+                # Bug 2b fix: Don't cache invalid PTB
+                if ptb > 0:
+                    cached_ptb = ptb
+                else:
+                    logger.error("Invalid PTB, skipping this window")
+                    time.sleep(interval)
+                    continue
+            else:
+                ptb = cached_ptb
+                ptb_source = 'cached'
+            
+            # Get BTC price
+            if ws:
+                btc_price = ws.get_current_price()
+                if not btc_price:
+                    logger.warning("No BTC price from WebSocket")
+                    time.sleep(interval)
+                    continue
+            else:
+                # REST fallback
+                try:
+                    resp = requests.get(
+                        f"{COINGECKO_API}/simple/price",
+                        params={'ids': 'bitcoin', 'vs_currencies': 'usd'},
+                        timeout=5
+                    )
+                    btc_price = resp.json()['bitcoin']['usd']
+                except Exception as e:
+                    logger.error(f"BTC price fetch failed: {e}")
+                    time.sleep(interval)
+                    continue
+            
+            # Get token prices
+            up_price, down_price = get_token_prices(market)
+            
+            # Calculate indicators
+            cvd_1m = 0.0
+            cvd_5m = 0.0
+            obi = 0.0
+            trend_score = 0.0
+            
+            if scorer and ws:
+                # Get trades and orderbook
+                trades = ws.get_trades(300)
+                orderbook = ws.get_orderbook()
+                
+                for t in trades[-100:]:  # Last 100 trades
+                    scorer.cvd.update(t)
+                
+                if orderbook['bids'] and orderbook['asks']:
+                    mid = (orderbook['bids'][0][0] + orderbook['asks'][0][0]) / 2
+                    obi = scorer.obi.calculate(orderbook, mid)
+                
+                cvd_vals = scorer.cvd.get_all_cvd()
+                cvd_1m = cvd_vals['cvd_1m']
+                cvd_5m = cvd_vals['cvd_5m']
+                
+                score_dict = scorer.get_score(orderbook)
+                trend_score = score_dict.get('score', 0.0)
+            
+            # Calculate gap and time remaining
+            gap = btc_price - ptb
+            time_remaining = max(0, market.window_end - time.time())
+            
+            # Check signals
+            signal_a, signal_b, signal_c = check_signals(
+                gap, up_price, time_remaining, cvd_5m, obi
+            )
+            
+            # Create observation
+            obs = Observation(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                btc_price=btc_price,
+                ptb=ptb,
+                ptb_source=ptb_source,
+                gap=gap,
+                up_token_price=up_price,
+                down_token_price=down_price,
+                time_remaining_sec=time_remaining,
+                cvd_1m=cvd_1m,
+                cvd_5m=cvd_5m,
+                obi=obi,
+                trend_score=trend_score,
+                signal_a=signal_a,
+                signal_b=signal_b,
+                signal_c=signal_c,
+                market_slug=market.slug,
+                market_question=market.question,
+            )
+            
+            # Log to CSV
+            csv_logger.log(obs)
+            
+            # Display
+            print(format_display(
+                market=market,
+                btc_price=btc_price,
+                ptb=ptb,
+                gap=gap,
+                up_price=up_price,
+                down_price=down_price,
+                time_remaining=time_remaining,
+                cvd_1m=cvd_1m,
+                cvd_5m=cvd_5m,
+                obi=obi,
+                trend_score=trend_score,
+                signal_a=signal_a,
+                signal_b=signal_b,
+                signal_c=signal_c,
+                dry_run=dry_run,
+            ))
+            
+            # Execute if signal and not dry run
+            if not dry_run and executor and (signal_a or signal_b or signal_c):
+                logger.info("Signal detected! Executing trade...")
+                result = executor.buy_token(
+                    token_id=market.up_token_id,
+                    price=up_price,
+                    size_usdc=MAX_ORDER_SIZE,
+                )
+                logger.info(f"Order result: {result}")
+            
+            time.sleep(interval)
+    
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+    
+    finally:
+        # Cleanup
+        if ws:
+            ws.stop()
+        csv_logger.close()
+        logger.info("Monitor stopped")
+
+
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="BTC 15-Min Monitor V2")
+    parser.add_argument(
+        '--duration', type=int, default=300,
+        help="Run duration in seconds (0=unlimited)"
+    )
+    parser.add_argument(
+        '--interval', type=float, default=5.0,
+        help="Polling interval in seconds"
+    )
+    parser.add_argument(
+        '--dry-run', action='store_true', default=True,
+        help="Don't execute trades (default: True)"
+    )
+    parser.add_argument(
+        '--log-dir', type=str, default="data/observations",
+        help="Directory for CSV logs"
+    )
+    
+    args = parser.parse_args()
+    
+    run_monitor(
+        duration=args.duration,
+        interval=args.interval,
+        dry_run=args.dry_run,
+        log_dir=args.log_dir,
+    )

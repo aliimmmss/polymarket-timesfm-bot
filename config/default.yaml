@@ -1,103 +1,44 @@
-# Default configuration for Polymarket Trading Bot
+# Polymarket Trading Bot Default Configuration
 
-database:
-  host: ${DB_HOST:localhost}
-  port: ${DB_PORT:5432}
-  name: ${DB_NAME:polymarket_bot}
-  user: ${DB_USER:bot_user}
-  password: ${DB_PASSWORD}
-  pool_size: 10
-  max_overflow: 20
-  echo_queries: ${DEBUG:false}
+monitor:
+  poll_interval: 5
+  clob_poll_interval: 10
+  log_dir: "data/observations"
+  max_log_files: 10
 
-polymarket:
-  api_url: "https://gamma-api.polymarket.com/"
-  graphql_endpoint: "https://api.polymarket.com/graphql"
-  ws_endpoint: "wss://gamma-ws.polymarket.com/"
-  refresh_interval: 60  # seconds
-  max_retries: 3
-  timeout: 30  # seconds
+strategy:
+  signal_a:
+    gap_threshold: 20.0
+    max_price: 0.55
+    min_time_remaining: 300  # 5 minutes
+    cvd_confirm: true  # Require CVD to agree with direction
   
-forecasting:
-  timesfm_model: "google/timesfm-2.5-200m-pytorch"
-  max_context: 1024
-  max_horizon: 256
-  forecast_horizons: [1, 6, 12, 24]  # hours to forecast ahead
-  normalize_inputs: true
-  use_continuous_quantile_head: true
-  force_flip_invariance: true
-  infer_is_positive: false
-  fix_quantile_crossing: true
-  forecast_cache_ttl: 300  # seconds
+  signal_b:
+    gap_threshold: 50.0
+    max_price: 0.95
+    max_time_remaining: 180  # 3 minutes
   
-feature_engineering:
-  lookback_windows: [24, 168, 720]  # 1d, 1w, 1m in hours
-  technical_indicators:
-    - "sma_24"
-    - "ema_12"
-    - "rsi_14"
-    - "bb_upper_20_2"
-    - "bb_lower_20_2"
-    - "atr_14"
-  volume_indicators:
-    - "volume_sma_24"
-    - "volume_ratio"
-    - "obv"
-    
+  signal_c:
+    cvd_threshold: 50.0
+    obi_threshold: 0.30
+    max_price: 0.50
+    min_time_remaining: 300
+
 trading:
-  paper_mode: ${PAPER_TRADING:true}
-  initial_capital: ${INITIAL_CAPITAL:1000.0}
-  min_market_liquidity: 10000.0  # USD
-  max_position_size: ${MAX_POSITION_SIZE:0.10}  # 10% of portfolio
-  max_category_exposure: 0.30  # 30% per category
-  slippage_tolerance: 0.005  # 0.5%
-  trade_fee: 0.003  # 0.3% trading fee
-  min_trade_size: 10.0  # USD
-  
-strategies:
-  probability_mispricing:
-    enabled: true
-    confidence_threshold: 0.02  # 2% difference required
-    min_confidence_width: 0.05  # Quantile width < 5%
-    max_hold_time: 72  # hours
-    
-  convergence_trading:
-    enabled: true
-    convergence_threshold: 0.015  # 1.5% from forecast
-    time_decay_weight: 0.1
-    max_days_to_resolution: 30
-    
-  volatility_arbitrage:
-    enabled: false  # Higher risk
-    volatility_threshold: 0.03  # 3% volatility spread
-    min_volume: 50000.0
-    
-risk:
-  max_daily_loss: ${MAX_DAILY_LOSS:0.05}  # 5%
-  max_weekly_loss: 0.15  # 15%
-  max_position_correlation: ${MAX_POSITION_CORRELATION:0.7}
-  circuit_breaker_losses: 3  # consecutive losses
-  volatility_adjustment: true
-  blacklist_categories: ["sports"]  # Higher manipulation risk
-  
-execution:
-  order_type: "TWAP"  # Time-Weighted Average Price
-  twap_duration: 60  # seconds
-  max_slippage: 0.01  # 1%
-  retry_failed_orders: true
-  max_order_retries: 2
-  
-monitoring:
-  metrics_update_interval: 60  # seconds
-  alert_channels:
-    - "console"
-    - "log_file"
-  performance_report_interval: 3600  # 1 hour
-  health_check_interval: 300  # 5 minutes
-  
-logging:
-  level: ${LOG_LEVEL:INFO}
-  file: ${LOG_FILE:logs/polymarket_bot.log}
-  max_file_size: 10485760  # 10MB
-  backup_count: 5
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  dry_run: true  # MUST be true for testing
+  auto_trade: false
+  trade_amount: 5.0
+  max_order_size: 10.0
+  daily_loss_limit: 20.0
+
+stop_loss:
+  gap_threshold: 10.0  # If gap drops below $10, sell
+  prob_pct: 0.15  # 15% drop from entry price
+  check_interval: 5.0
+  min_hold_time: 30.0
+
+data:
+  binance_websocket: true
+  polymarket_api: "https://gamma-api.polymarket.com"
+  clob_api: "https://clob.polymarket.com"
+  crypto_price_api: "https://polymarket.com/api/crypto/crypto-price"
