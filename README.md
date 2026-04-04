@@ -1,252 +1,84 @@
-# Polymarket Trading Bot with TimesFM
+# Polymarket Trading Bot
 
-An automated trading bot for Polymarket prediction markets using Google's TimesFM foundation model for probabilistic forecasting.
+A Polymarket prediction market trading bot using Google's TimesFM 2.5 for price forecasting.
 
-## Overview
+## Project Structure
 
-This bot leverages Google's TimesFM (Time Series Foundation Model) to forecast price movements in Polymarket prediction markets. It implements algorithmic trading strategies that exploit discrepancies between market-implied probabilities and TimesFM-forecasted probabilities.
-
-## Features
-
-- **Zero-shot Forecasting**: Uses TimesFM's pre-trained model for probabilistic time series forecasting
-- **Real-time Data Collection**: Fetches market data from Polymarket GraphQL API
-- **Multi-strategy Trading**: Implements probability mispricing, convergence trading, and volatility arbitrage
-- **Comprehensive Risk Management**: Position sizing, correlation limits, drawdown controls
-- **Backtesting Framework**: Historical strategy testing with performance metrics
-- **Paper Trading Mode**: Risk-free testing before live deployment
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Trading Bot System                       │
-├─────────────────────────────────────────────────────────────┤
-│  Data Collection Layer   │   Forecasting Layer   │  Execution│
-├──────────────────────────┼───────────────────────┼───────────┤
-│• Polymarket API Client   │• TimesFM Model        │• Order    │
-│• News/Social Feeds       │• Feature Engineering  │  Management│
-│• Historical DB (Postgres)│• Signal Generation    │• Risk     │
-│• Real-time Streams       │• Backtesting Engine   │  Controls │
-└──────────────────────────┴───────────────────────┴───────────┘
-```
-
-## Installation
-
-### Prerequisites
-- Python 3.10+
-- PostgreSQL 14+
-- UV package manager (`pip install uv`)
-
-### Quick Start
-
-1. **Clone and setup**:
-   ```bash
-   git clone <repository-url>
-   cd polymarket-bot
-   uv venv
-   source .venv/bin/activate
-   uv pip install -e .[prod]
-   ```
-
-2. **Configure environment**:
-   ```bash
-   cp .env.example .env
-   # Edit .env with your configurations
-   ```
-
-3. **Set up database**:
-   ```bash
-   python scripts/setup_db.py
-   ```
-
-4. **Collect historical data**:
-   ```bash
-   python scripts/collect_historical_data.py
-   ```
-
-5. **Run backtest**:
-   ```bash
-   python scripts/run_backtest.py --strategy convergence --start-date 2024-01-01
-   ```
-
-## Configuration
-
-### Key Configuration Files
-
-- `config/default.yaml`: Main application configuration
-- `config/trading_strategies.yaml`: Strategy parameters
-- `config/risk_parameters.yaml`: Risk management settings
-- `.env`: Environment variables (API keys, database credentials)
-
-### Environment Variables
-
-See `.env.example` for required variables:
-- Database credentials
-- Polymarket API keys
-- Wallet private key (for live trading)
-- External API keys (news, social media)
-- HuggingFace token (for TimesFM)
-
-## Usage
-
-### Paper Trading Mode
-```python
-from src.trading.paper_trader import PaperTrader
-
-trader = PaperTrader(
-    initial_capital=1000.0,
-    strategy="convergence",
-    risk_params="config/risk_parameters.yaml"
-)
-trader.run()
-```
-
-### Live Trading Mode
-```python
-from src.trading.live_trader import LiveTrader
-
-trader = LiveTrader(
-    wallet_private_key="your_key",
-    strategy="probability_mispricing",
-    risk_params="config/risk_parameters.yaml"
-)
-# Requires careful testing and small capital initially
-```
-
-### Backtesting
-```python
-from src.backtesting.backtester import Backtester
-
-backtester = Backtester(
-    start_date="2024-01-01",
-    end_date="2024-03-01",
-    strategy="volatility_arbitrage",
-    initial_capital=1000.0
-)
-results = backtester.run()
-print(f"Sharpe Ratio: {results.sharpe_ratio}")
-print(f"Total Return: {results.total_return}")
-```
-
-## Trading Strategies
-
-### 1. Probability Mispricing
-- **Concept**: Buy when TimesFM forecast > market price + confidence margin
-- **Exit**: When market converges to forecast or profit target reached
-- **Risk**: Moderate (depends on forecast confidence)
-
-### 2. Convergence Trading
-- **Concept**: Bet on markets converging to "true" probability over time
-- **Exit**: At resolution date or when convergence completes
-- **Risk**: Low to moderate (time-based decay)
-
-### 3. Volatility Arbitrage
-- **Concept**: Exploit differences between forecasted and implied volatility
-- **Exit**: When volatility spreads normalize
-- **Risk**: High (requires precise timing)
-
-## Risk Management
-
-### Position Limits
-- Max 10% of portfolio per market
-- Max 30% of portfolio per category
-- Scaling based on forecast confidence
-
-### Correlation Controls
-- Maximum 0.7 correlation between active positions
-- Diversification across uncorrelated event types
-
-### Drawdown Protection
-- Daily loss limit: 5% of portfolio
-- Weekly loss limit: 15% of portfolio
-- Circuit breaker after 3 consecutive losses
-
-## Development
-
-### Project Structure
 ```
 polymarket-bot/
-├── src/                    # Source code
-│   ├── data_collection/   # Data fetching and storage
-│   ├── forecasting/       # TimesFM integration and signals
-│   ├── trading/          # Portfolio and order management
-│   ├── backtesting/      # Historical testing framework
-│   └── utils/            # Shared utilities
-├── scripts/              # Operational scripts
-├── config/               # Configuration files
-├── tests/               # Test suite
-├── notebooks/           # Exploration and analysis
-└── docker/              # Containerization
+├── config/                    # Configuration files
+│   ├── default.yaml
+│   ├── risk_parameters.yaml
+│   └── trading_strategies.yaml
+├── data/                      # Data storage (gitignored)
+│   ├── raw/                   # Raw API data
+│   ├── processed/             # Processed features
+│   └── forecasts/             # Model predictions
+├── src/
+│   ├── bot/                   # Main bot logic
+│   ├── data_collection/       # Polymarket API client
+│   ├── forecasting/           # TimesFM integration
+│   ├── trading/               # Trade execution
+│   └── utils/                 # Utilities
+└── pyproject.toml
 ```
 
-### Running Tests
+## Setup
+
+1. Create virtual environment:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+2. Install dependencies:
+   ```bash
+   pip install -e ".[prod]"
+   ```
+
+3. Configure environment:
+   ```bash
+   cp .env.example .env
+   # Edit .env with your credentials
+   ```
+
+## Data Collection
+
+Fetch market data from Polymarket:
 ```bash
-pytest tests/ -v
-pytest tests/ --cov=src --cov-report=html
+python -m src.data_collection.polymarket_client
 ```
 
-### Code Quality
-```bash
-black src/ tests/
-flake8 src/ tests/
-mypy src/
+Uses:
+- Gamma API (`https://gamma-api.polymarket.com`) for market metadata
+- CLOB API (`https://clob.polymarket.com`) for order books and price history
+
+## Forecasting
+
+TimesFM 2.5 requires:
+- Exactly 256 context points for input
+- Zero-mean normalization works best
+- Returns NaN with insufficient input length
+
+## API Reference
+
+### PolymarketGammaClient
+
+```python
+from src.data_collection.polymarket_client import PolymarketGammaClient
+
+client = PolymarketGammaClient()
+
+# Fetch top markets by volume
+markets = client.get_top_markets_by_volume(limit=10)
+
+# Get current order book
+order_book = client.get_market_order_book(condition_id)
+
+# Generate price history (256 points for TimesFM)
+price_history = client.generate_realistic_price_history(market_data)
 ```
-
-## Performance Metrics
-
-### Primary Metrics
-- **Sharpe Ratio**: Target > 2.0
-- **Win Rate**: Target > 55%
-- **Maximum Drawdown**: Limit < 15%
-- **Daily Return**: Target 0.3-0.5%
-
-### Operational Metrics
-- **Forecast Accuracy**: MAE < 0.02 (2 percentage points)
-- **Execution Slippage**: < 0.5% per trade
-- **System Uptime**: > 99.5%
-
-## Legal & Compliance
-
-### Important Considerations
-1. **Regulatory Status**: Prediction markets exist in legal gray areas in many jurisdictions
-2. **Tax Implications**: Trading profits may be taxable as capital gains or income
-3. **Risk Disclosure**: Trading involves risk of loss; only risk capital should be used
-4. **Compliance**: Ensure compliance with local laws and regulations
-
-### Recommended Practices
-- Start with paper trading only
-- Use small amounts for initial live testing
-- Maintain detailed records for tax purposes
-- Consult legal counsel for your jurisdiction
-
-## Roadmap
-
-### Phase 1 (Complete)
-- [x] Project setup and TimesFM integration
-- [x] Basic data collection infrastructure
-- [x] Backtesting framework
-
-### Phase 2 (In Progress)
-- [ ] Full trading strategy implementation
-- [ ] Risk management system
-- [ ] Paper trading mode
-
-### Phase 3 (Planned)
-- [ ] Live trading with small capital
-- [ ] Advanced features (ensemble forecasting, RL)
-- [ ] Scaling optimizations
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make changes with tests
-4. Submit a pull request
 
 ## License
 
-MIT License - see LICENSE file for details.
-
-## Disclaimer
-
-This software is for educational and research purposes only. Use at your own risk. The authors are not responsible for any financial losses incurred. Always consult with financial and legal professionals before trading with real money.
+MIT
