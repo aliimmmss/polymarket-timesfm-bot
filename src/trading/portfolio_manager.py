@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
-from ..trading.trade_executor import Order
+from ..trading.order_executor import Order
 
 logger = logging.getLogger(__name__)
 
