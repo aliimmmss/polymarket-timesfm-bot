@@ -1,0 +1,108 @@
+# Pre-commit hooks for local CI/CD
+# Install: pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # Generic checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-added-large-files  # Prevent large files
+      - id: check-ast                # Check Python syntax
+      - id: check-json               # Check JSON syntax
+      - id: check-merge-conflict     # Check for merge conflicts
+      - id: check-toml               # Check TOML syntax
+      - id: check-yaml               # Check YAML syntax
+      - id: end-of-file-fixer        # Ensure files end with newline
+      - id: mixed-line-ending        # Fix line endings
+      - id: trailing-whitespace      # Remove trailing whitespace
+      - id: check-docstring-first    # Check docstrings before code
+      - id: debug-statements         # Prevent debugging code in commits
+      - id: name-tests-test          # Ensure test files are named correctly
+        args: [--pytest-test-first]
+
+  # Python formatting
+  - repo: https://github.com/psf/black
+    rev: 23.12.1
+    hooks:
+      - id: black
+        language_version: python3.11
+        args: [--line-length=100]
+        exclude: ^venv/|^\.venv/
+
+  # Python imports sorting
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: [--profile=black, --line-length=100]
+
+  # Python linting
+  - repo: https://github.com/pycqa/flake8
+    rev: 6.1.0
+    hooks:
+      - id: flake8
+        args: [--max-line-length=100, --ignore=E203,W503]
+        exclude: ^venv/|^\.venv/
+
+  # Python type checking (optional - may be too strict)
+  #- repo: https://github.com/pre-commit/mirrors-mypy
+  #  rev: v1.8.0
+  #  hooks:
+  #    - id: mypy
+  #      args: [--ignore-missing-imports]
+  #      additional_dependencies: [types-requests]
+
+  # Security scanning
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.7
+    hooks:
+      - id: bandit
+        args: [--skip=B101]
+        exclude: ^tests/
+
+  # Secrets detection
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        args: [--baseline=.secrets.baseline]
+
+  # Shell script checking (if you have shell scripts)
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.9.0
+    hooks:
+      - id: shellcheck
+        files: \.(sh|bash)$
+
+  # Dockerfile linting
+  - repo: https://github.com/AleksaC/hadolint-py
+    rev: hadolint-2.12.0
+    hooks:
+      - id: hadolint
+        args: [--ignore=DL3008, --ignore=DL3013]
+
+  # Local custom hooks for testing
+  - repo: local
+    hooks:
+      - id: pytest-check
+        name: pytest-check
+        entry: python -m pytest tests/ -v --tb=short -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [push]  # Only run on push, not on every commit
+
+      - id: safety-check
+        name: safety-check
+        entry: safety check
+        language: system
+        pass_filenames: false
+        always_run: false  # Optional - may be slow
+
+  # Git message formatting
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v3.13.0
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
