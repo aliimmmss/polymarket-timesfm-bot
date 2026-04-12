@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}Dashboard{% endblock %}</title>
+    <style>
+        body { font-family: sans-serif; background: #0d1117; color: #c9d1d9; margin: 0; padding: 0; }
+        .navbar { background: #161b22; padding: 1rem 2rem; border-bottom: 1px solid #30363d; }
+        .navbar h1 { color: #58a6ff; margin: 0; }
+        .nav-links { margin-top: 0.5rem; }
+        .nav-links a { color: #c9d1d9; text-decoration: none; margin-right: 1.5rem; }
+        .nav-links a:hover { color: #58a6ff; }
+        .container { max-width: 1200px; margin: 2rem auto; padding: 0 2rem; }
+        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; }
+        .stat { background: #0d1117; padding: 1rem; border-radius: 6px; }
+        .stat-value { font-size: 2rem; font-weight: bold; color: #58a6ff; }
+        .stat-label { color: #8b949e; font-size: 0.875rem; }
+        .positive { color: #3fb950; }
+        .negative { color: #f85149; }
+        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+        th, td { padding: 0.75rem; border-bottom: 1px solid #30363d; text-align: left; }
+        th { color: #8b949e; }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1>🤖 Polymarket Bot</h1>
+        <div class="nav-links">
+            <a href="/">Overview</a>
+            <a href="/trades">Trades</a>
+            <a href="/signals">Signals</a>
+            <a href="/positions">Positions</a>
+            <a href="/status">Status</a>
+        </div>
+    </nav>
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>

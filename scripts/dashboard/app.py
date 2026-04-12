@@ -231,5 +231,16 @@ def api_status():
 
 if __name__ == '__main__':
     create_templates()
-    logger.info("Dashboard: http://localhost:5000")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Try ports 5000-5010
+    port = 5000
+    import socket
+    for p in range(5000, 5011):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex(('127.0.0.1', p))
+        sock.close()
+        if result != 0:  # Port available
+            port = p
+            break
+    
+    logger.info(f"Dashboard: http://localhost:{port}")
+    app.run(host='0.0.0.0', port=port, debug=False)

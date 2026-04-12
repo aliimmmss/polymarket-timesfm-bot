@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>Signal History</h2>
+    <table>
+        <thead><tr><th>Time</th><th>Signal</th><th>Side</th><th>Price</th><th>Size</th><th>P&L</th></tr></thead>
+        <tbody id="tb"><tr><td colspan="6" style="text-align:center;">Loading...</td></tr></tbody>
+    </table>
+</div>
+<script>
+async function load() {
+    const r = await fetch('/api/trades');
+    const t = await r.json();
+    document.getElementById('tb').innerHTML = t.length ? t.map(x => {
+        const tm = new Date(x.timestamp).toLocaleString();
+        const cl = (x.pnl||0)>0 ? 'positive' : (x.pnl||0)<0 ? 'negative' : '';
+        return `<tr><td>${tm}</td><td>${x.signal}</td><td>${x.side}</td><td>${x.price?.toFixed(4)||'-'}</td><td>$${x.size_usdc?.toFixed(2)||'-'}</td><td class="${cl}">${x.pnl?'$'+x.pnl.toFixed(2):'-'}</td></tr>`;
+    }).join('') : '<tr><td colspan="6" style="text-align:center;">No trades</td></tr>';
+}
+load();
+setInterval(load, 10000);
+</script>
+{% endblock %}

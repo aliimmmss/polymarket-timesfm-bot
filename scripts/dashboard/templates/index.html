@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid">
+    <div class="card">
+        <h2>Portfolio</h2>
+        <div class="stat">
+            <div class="stat-value" id="balance">$1,000.00</div>
+            <div class="stat-label">Paper Balance</div>
+        </div>
+        <div class="stat" style="margin-top:1rem;">
+            <div class="stat-value" id="pnl">$0.00</div>
+            <div class="stat-label">Total P&L</div>
+        </div>
+    </div>
+    <div class="card">
+        <h2>Performance</h2>
+        <div class="stat">
+            <div class="stat-value" id="win-rate">0%</div>
+            <div class="stat-label">Win Rate</div>
+        </div>
+        <div class="stat" style="margin-top:1rem;">
+            <div class="stat-value" id="total-trades">0</div>
+            <div class="stat-label">Total Trades</div>
+        </div>
+    </div>
+</div>
+<script>
+async function update() {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    document.getElementById('balance').textContent = '$' + d.portfolio.paper_balance.toFixed(2);
+    document.getElementById('pnl').textContent = '$' + d.portfolio.total_pnl.toFixed(2);
+    document.getElementById('win-rate').textContent = d.portfolio.win_rate.toFixed(1) + '%';
+    document.getElementById('total-trades').textContent = d.portfolio.total_trades;
+}
+update();
+setInterval(update, 5000);
+</script>
+{% endblock %}
