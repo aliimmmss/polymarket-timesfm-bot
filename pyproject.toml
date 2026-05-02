@@ -59,9 +59,9 @@ dev = [
 polymarket-bot = "src.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/aliimmmss/polymarket-timesfm-bot"
-Repository = "https://github.com/aliimmmss/polymarket-timesfm-bot"
-Documentation = "https://github.com/aliimmmss/polymarket-timesfm-bot#readme"
+Homepage = "https://github.com/aliimmmss/polymarket-trading-bot"
+Repository = "https://github.com/aliimmmss/polymarket-trading-bot"
+Documentation = "https://github.com/aliimmmss/polymarket-trading-bot#readme"
 
 [tool.hatch.version]
 path = "src/__init__.py"
