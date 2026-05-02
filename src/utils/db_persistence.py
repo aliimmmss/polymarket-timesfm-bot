@@ -43,6 +43,9 @@ class TradeRecord:
     status: str  # 'PENDING', 'FILLED', 'PARTIAL', 'FAILED'
     order_id: Optional[str]
     dry_run: bool
+    outcome: Optional[str] = None  # 'win', 'loss', 'push', or None if pending
+    resolved_at: Optional[datetime] = None
+    final_up_price: Optional[float] = None
 
 
 @dataclass
@@ -100,7 +103,10 @@ class TradingDatabase:
                     pnl REAL,
                     status TEXT DEFAULT 'PENDING',
                     order_id TEXT,
-                    dry_run BOOLEAN DEFAULT TRUE
+                    dry_run BOOLEAN DEFAULT TRUE,
+                    outcome TEXT,
+                    resolved_at TEXT,
+                    final_up_price REAL
                 )
             """)
             
@@ -376,6 +382,67 @@ class TradingDatabase:
             )
             conn.commit()
             return cursor.lastrowid
+
+
+    def update_trade_outcome(self, trade_id: int, outcome: str, final_up_price: float) -> bool:
+        """Update a trade with its resolution outcome.
+
+        Args:
+            trade_id: Trade record ID
+            outcome: 'win', 'loss', or 'push'
+            final_up_price: Final resolved price of UP token (0.0–1.0)
+
+        Returns:
+            True if updated successfully
+        """
+        try:
+            with self._get_connection() as conn:
+                conn.execute("""
+                    UPDATE trades
+                    SET outcome = ?, resolved_at = ?, final_up_price = ?
+                    WHERE id = ?
+                """, (
+                    outcome,
+                    datetime.now().isoformat(),
+                    final_up_price,
+                    trade_id
+                ))
+                conn.commit()
+                logger.debug(f"Updated trade {trade_id}: outcome={outcome}, final_up={final_up_price:.3f}")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to update trade {trade_id} outcome: {e}")
+            return False
+
+    def get_open_trades(self) -> List[Dict]:
+        """Get all trades that have not yet been resolved (outcome IS NULL).
+
+        Returns:
+            List of trade dicts
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute("""
+                    SELECT id, market_slug, signal, entry_price, confidence
+                    FROM trades
+                    WHERE outcome IS NULL
+                      AND status IN ('FILLED', 'PARTIAL')
+                      AND dry_run = TRUE
+                """)
+                rows = cursor.fetchall()
+                trades = []
+                for row in rows:
+                    trades.append({
+                        'id': row[0],
+                        'market_slug': row[1],
+                        'signal': row[2],
+                        'entry_price': row[3],
+                        'confidence': row[4],
+                    })
+                return trades
+        except Exception as e:
+            logger.error(f"Failed to fetch open trades: {e}")
+            return []
 
 
 # Example usage

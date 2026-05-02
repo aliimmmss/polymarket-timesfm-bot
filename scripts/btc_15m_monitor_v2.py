@@ -71,6 +71,12 @@ try:
 except ImportError:
     HAS_TRADE_JOURNAL = False
 
+try:
+    from src.analysis.outcome_evaluator import OutcomeEvaluator
+    HAS_OUTCOME_EVAL = True
+except ImportError:
+    HAS_OUTCOME_EVAL = False
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
