@@ -591,6 +591,10 @@ def run_monitor(
     stop_loss = None
     if HAS_STOP_LOSS:
         stop_loss = StopLossManager()
+
+    # Track open positions for exit logging
+    # Key: token_id, Value: dict with market, entry_price, size_usdc, size_tokens, order_id, buy_time
+    open_positions = {}
     
     # Market tracking
     current_market = None
@@ -767,9 +771,91 @@ def run_monitor(
                         }
                         trade_journal.log_entry(trade_record)
                         logger.info("Trade logged to journal")
+
+                        # Register position for stop-loss monitoring and exit logging
+                        if result.get('success') and stop_loss:
+                            token_id = market.up_token_id
+                            size_tokens = result.get('size_tokens', MAX_ORDER_SIZE / up_price)
+                            stop_loss.add_position(
+                                token_id=token_id,
+                                buy_price=up_price,
+                                buy_time=time.time(),
+                                side='up',
+                                size=MAX_ORDER_SIZE,
+                                take_profit_pct=0.5,  # 50% take-profit target
+                            )
+                            open_positions[token_id] = {
+                                'market': market.question,
+                                'entry_price': up_price,
+                                'size_usdc': MAX_ORDER_SIZE,
+                                'size_tokens': size_tokens,
+                                'order_id': result.get('order_id'),
+                                'buy_time': time.time(),
+                            }
+                            logger.info(f"Position registered for stop-loss monitoring: {token_id[:30]}...")
                     except Exception as e:
                         logger.error(f"Failed to log trade: {e}")
-            
+
+            # EXIT: Check stop-loss / take-profit for open positions
+            if stop_loss and open_positions:
+                # Build current price map for our held tokens (only UP tokens currently)
+                current_prices = {}
+                for token_id in open_positions:
+                    current_prices[token_id] = up_price  # we track up_price for current market
+
+                if current_prices:
+                    actions = stop_loss.check(current_prices, current_time=time.time())
+                    for action in actions:
+                        if action.get('action') != 'SELL':
+                            continue
+                        token_id = action['token_id']
+                        pos_info = open_positions.get(token_id)
+                        if not pos_info:
+                            continue
+                        trigger = action.get('trigger', 'UNKNOWN')
+                        logger.info(f"Exit triggered: {trigger} for {token_id[:30]}...")
+
+                        # Execute sell
+                        sell_price = current_prices.get(token_id, pos_info['entry_price'])
+                        if executor:
+                            # Size in tokens to sell = all tokens we hold
+                            size_tokens = pos_info['size_tokens']
+                            sell_result = executor.sell_token(
+                                token_id=token_id,
+                                price=sell_price,
+                                size_tokens=size_tokens,
+                            )
+                            logger.info(f"Sell order result: {sell_result}")
+                        else:
+                            sell_result = {'success': True, 'order_id': 'DRY_RUN_EXIT'}
+
+                        # Calculate P&L
+                        entry = pos_info['entry_price']
+                        tokens = pos_info['size_tokens']
+                        pnl_usdc = (sell_price - entry) * tokens
+                        pnl_pct = (sell_price - entry) / entry if entry else 0.0
+
+                        # Log exit to journal
+                        if trade_journal:
+                            try:
+                                journal_ok = trade_journal.log_exit(
+                                    order_id=pos_info['order_id'],
+                                    market=pos_info['market'],
+                                    exit_price=sell_price,
+                                    pnl_usdc=pnl_usdc,
+                                    pnl_pct=pnl_pct,
+                                    exit_reason=trigger,
+                                    lessons="",
+                                )
+                                if journal_ok:
+                                    logger.info("Exit logged to journal")
+                            except Exception as e:
+                                logger.error(f"Failed to log exit: {e}")
+
+                        # Cleanup
+                        stop_loss.remove_position(token_id)
+                        open_positions.pop(token_id, None)
+
             time.sleep(interval)
     
     except KeyboardInterrupt:

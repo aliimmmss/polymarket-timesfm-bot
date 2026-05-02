@@ -5,8 +5,11 @@ Integrates with Hermes trading skills for performance analysis.
 
 import os
 import yaml
+import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class TradeJournal:
@@ -84,27 +87,89 @@ class TradeJournal:
 
     def log_exit(
         self,
-        market: str,
-        exit_price: float,
+        order_id: Optional[str] = None,
+        market: Optional[str] = None,
+        exit_price: Optional[float] = None,
         pnl_usdc: Optional[float] = None,
         pnl_pct: Optional[float] = None,
+        exit_reason: str = "",
         lessons: str = "",
-    ) -> None:
-        """Append an exit entry for a position.
+    ) -> bool:
+        """Update an existing open trade with exit details.
 
-        In current implementation, we simply append a closing record.
-        Sophisticated matching of open positions can be added later.
+        Reads the entire log, finds the matching open entry (by order_id if
+        provided, else by market with no exit_price), updates exit fields,
+        and rewrites the file.
+
+        Returns True if an entry was found and updated, False otherwise.
         """
-        entry = {
-            "date": datetime.now().isoformat(),
-            "market": market,
-            "position": "CLOSE",
-            "exit_price": exit_price,
-            "pnl_usdc": pnl_usdc,
-            "pnl_pct": pnl_pct,
-            "outcome": "closed",
-            "lessons": lessons,
-        }
-        with open(self.log_path, 'a') as f:
-            yaml.dump(entry, f, default_flow_style=False, sort_keys=False)
-            f.write('\n---\n')
+        if not os.path.exists(self.log_path):
+            logger.warning(f"Trade log not found: {self.log_path}")
+            return False
+
+        # Read all entries (YAML documents separated by ---)
+        with open(self.log_path, 'r') as f:
+            content = f.read()
+
+        # Split YAML documents
+        docs = []
+        for doc in content.split('\n---\n'):
+            doc = doc.strip()
+            if doc:
+                try:
+                    entry = yaml.safe_load(doc) or {}
+                    docs.append(entry)
+                except yaml.YAMLError:
+                    continue
+
+        # Find entry to update
+        target_idx = None
+        for i, entry in enumerate(docs):
+            # Match by order_id if provided
+            if order_id is not None:
+                if entry.get('order_id') == order_id:
+                    target_idx = i
+                    break
+            # Else match by market and missing exit_price (open position)
+            elif market is not None and entry.get('exit_price') is None:
+                if entry.get('market') == market:
+                    target_idx = i
+                    break
+
+        if target_idx is None:
+            logger.warning(f"No open trade found to update (order_id={order_id}, market={market})")
+            return False
+
+        # Update entry
+        entry = docs[target_idx]
+        if exit_price is not None:
+            entry['exit_price'] = round(float(exit_price), 4)
+        if pnl_usdc is not None:
+            entry['pnl_usdc'] = round(float(pnl_usdc), 4)
+        if pnl_pct is not None:
+            entry['pnl_pct'] = round(float(pnl_pct), 4)
+        if exit_reason:
+            entry['exit_reason'] = exit_reason
+        if lessons:
+            entry['lessons'] = lessons
+        # Set outcome based on P&L
+        if pnl_usdc is not None:
+            if pnl_usdc > 0:
+                entry['outcome'] = 'win'
+            elif pnl_usdc < 0:
+                entry['outcome'] = 'loss'
+            else:
+                entry['outcome'] = 'scratch'
+        else:
+            entry['outcome'] = 'closed'
+        entry['exit_date'] = datetime.now().isoformat()
+
+        # Rewrite file
+        with open(self.log_path, 'w') as f:
+            for i, doc in enumerate(docs):
+                yaml.dump(doc, f, default_flow_style=False, sort_keys=False)
+                if i < len(docs) - 1:
+                    f.write('\n---\n')
+
+        logger.info(f"Trade exit logged: {market} @ {exit_price} (PNL: ${pnl_usdc or 0:.2f})")
+        return True
