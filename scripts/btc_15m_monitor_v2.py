@@ -29,6 +29,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# FIX: Force certifi CA bundle for SSL in WSL environments with broken system CAs
+try:
+    import certifi
+    os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+    os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
+except ImportError:
+    pass  # certifi not available; requests will use its own fallback
+
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -174,87 +182,95 @@ class Market:
 
 def get_ptb_from_polymarket(window_start_ts: int) -> Optional[Tuple[float, str]]:
     """Get PTB from Polymarket crypto-price API.
-    
+
     Args:
         window_start_ts: Unix timestamp of window start
-    
+
     Returns:
         Tuple of (price, source) or None if failed
     """
-    try:
-        # Polymarket crypto-price API
-        params = {
-            'symbol': 'BTC',
-            'eventStartTime': window_start_ts,
-            'variant': 'fifteen',
-        }
-        
-        resp = requests.get(
-            CRYPTO_PRICE_API,
-            params=params,
-            timeout=10
-        )
-        
-        if resp.status_code == 200:
-            data = resp.json()
-            if 'price' in data and data['price'] > 0:
-                return (float(data['price']), 'polymarket-api')
-        
-        logger.warning(f"Polymarket API returned invalid: {resp.status_code}")
-        return None
-        
-    except Exception as e:
-        logger.warning(f"Polymarket PTB API failed: {e}")
-        return None
+    for verify in [True, False]:  # try normal first, then skip verification
+        try:
+            # Polymarket crypto-price API
+            params = {
+                'symbol': 'BTC',
+                'eventStartTime': window_start_ts,
+                'variant': 'fifteen',
+            }
+
+            resp = requests.get(
+                CRYPTO_PRICE_API,
+                params=params,
+                timeout=10,
+                verify=verify
+            )
+
+            if resp.status_code == 200:
+                data = resp.json()
+                # API may return either 'price' or 'openPrice' depending on window state
+                raw_price = data.get('price') or data.get('openPrice')
+                if raw_price and float(raw_price) > 0:
+                    return (float(raw_price), 'polymarket-api')
+            else:
+                logger.debug(f"Polymarket API returned HTTP {resp.status_code} (verify={verify})")
+        except Exception as e:
+            logger.warning(f"Polymarket PTB API failed (verify={verify}): {e}")
+            if not verify:
+                break  # second attempt failed, stop retrying
+
+    logger.warning("Polymarket PTB fetch failed after all retries")
+    return None
 
 
 def get_ptb_from_coingecko(window_start_ts: int) -> Optional[Tuple[float, str]]:
     """Get PTB from CoinGecko historical API.
-    
+
     Fallback when Polymarket API unavailable.
-    
+
     Args:
         window_start_ts: Unix timestamp of window start
-    
+
     Returns:
         Tuple of (price, source) or None if failed
     """
-    try:
-        # CoinGecko historical price
-        end_ts = window_start_ts + 60  # Small window around start
-        url = f"{COINGECKO_API}/coins/bitcoin/market_chart/range"
-        
-        resp = requests.get(
-            url,
-            params={
-                'vs_currency': 'usd',
-                'from': window_start_ts - 60,
-                'to': end_ts,
-            },
-            timeout=15
-        )
-        
-        if resp.status_code == 200:
-            data = resp.json()
-            prices = data.get('prices', [])
-            
-            if prices:
-                # Find closest price to window start
-                closest = min(
-                    prices,
-                    key=lambda p: abs(p[0]/1000 - window_start_ts)
-                )
-                price = closest[1]
-                
-                if price > 0:
-                    return (price, 'coingecko')
-        
-        logger.warning(f"CoinGecko returned invalid data")
-        return None
-        
-    except Exception as e:
-        logger.warning(f"CoinGecko PTB fetch failed: {e}")
-        return None
+    for verify in [True, False]:
+        try:
+            # CoinGecko historical price
+            end_ts = window_start_ts + 60  # Small window around start
+            url = f"{COINGECKO_API}/coins/bitcoin/market_chart/range"
+
+            resp = requests.get(
+                url,
+                params={
+                    'vs_currency': 'usd',
+                    'from': window_start_ts - 60,
+                    'to': end_ts,
+                },
+                timeout=15,
+                verify=verify
+            )
+
+            if resp.status_code == 200:
+                data = resp.json()
+                prices = data.get('prices', [])
+                if prices:
+                    # Find closest price to window start
+                    closest = min(
+                        prices,
+                        key=lambda p: abs(p[0]/1000 - window_start_ts)
+                    )
+                    price = closest[1]
+                    if price > 0:
+                        return (price, 'coingecko')
+            else:
+                logger.debug(f"CoinGecko PTB HTTP {resp.status_code} (verify={verify})")
+        except Exception as e:
+            logger.warning(f"CoinGecko PTB fetch failed (verify={verify}): {e}")
+            if not verify:
+                break
+
+    logger.warning("CoinGecko PTB fetch failed after all retries")
+    return None
 
 
 def get_ptb(window_start_ts: int, cached_ptb: Optional[float] = None) -> Tuple[float, str]:
@@ -295,108 +311,124 @@ def get_ptb(window_start_ts: int, cached_ptb: Optional[float] = None) -> Tuple[f
 
 def find_active_market() -> Optional[Market]:
     """Find current active BTC 15-minute market.
-    
+
     Returns:
         Market object or None
     """
     now = time.time()
     current_ts = int(now // 900) * 900  # Floor to 15-min boundary
     slug = f"btc-updown-15m-{current_ts}"
-    
-    try:
-        resp = requests.get(
-            f"{GAMMA_API}/markets",
-            params={'slug': slug},
-            timeout=10
-        )
-        
-        if resp.status_code == 200 and resp.json():
-            m = resp.json()[0]
-            
-            if m.get('active') and not m.get('closed'):
-                # Parse token IDs
-                if isinstance(m.get('clobTokenIds'), str):
-                    token_ids = json.loads(m['clobTokenIds'])
-                else:
-                    token_ids = m.get('clobTokenIds', [])
-                
-                return Market(
-                    slug=m.get('slug', slug),
-                    question=m.get('question', ''),
-                    up_token_id=token_ids[0] if len(token_ids) > 0 else '',
-                    down_token_id=token_ids[1] if len(token_ids) > 1 else '',
-                    window_start=current_ts,
-                    window_end=current_ts + 900,
-                    active=True,
-                )
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Market discovery failed: {e}")
-        return None
+
+    for verify in [True, False]:
+        try:
+            resp = requests.get(
+                f"{GAMMA_API}/markets",
+                params={'slug': slug},
+                timeout=10,
+                verify=verify
+            )
+
+            if resp.status_code == 200 and resp.json():
+                m = resp.json()[0]
+
+                if m.get('active') and not m.get('closed'):
+                    # Parse token IDs
+                    if isinstance(m.get('clobTokenIds'), str):
+                        token_ids = json.loads(m['clobTokenIds'])
+                    else:
+                        token_ids = m.get('clobTokenIds', [])
+
+                    return Market(
+                        slug=m.get('slug', slug),
+                        question=m.get('question', ''),
+                        up_token_id=token_ids[0] if len(token_ids) > 0 else '',
+                        down_token_id=token_ids[1] if len(token_ids) > 1 else '',
+                        window_start=current_ts,
+                        window_end=current_ts + 900,
+                        active=True,
+                    )
+
+            else:
+                logger.debug(f"Gamma API HTTP {resp.status_code} (verify={verify})")
+        except Exception as e:
+            logger.debug(f"Market discovery failed (verify={verify}): {e}")
+            if not verify:
+                break
+
+    logger.error("Market discovery failed after all retries")
+    return None
 
 
 def get_token_prices(market: Market) -> Tuple[float, float]:
     """Get Up and Down token prices from CLOB API.
-    
+
     Args:
         market: Market object
-    
+
     Returns:
         Tuple of (up_price, down_price)
     """
-    try:
-        # Get midpoint prices
-        up_resp = requests.get(
-            f"{CLOB_API}/midpoint",
-            params={'token_id': market.up_token_id},
-            timeout=5
-        )
-        down_resp = requests.get(
-            f"{CLOB_API}/midpoint",
-            params={'token_id': market.down_token_id},
-            timeout=5
-        )
-        
-        up_price = 0.5
-        down_price = 0.5
-        
-        if up_resp.status_code == 200:
-            up_price = float(up_resp.json().get('mid', 0.5))
-        if down_resp.status_code == 200:
-            down_price = float(down_resp.json().get('mid', 0.5))
-        
-        return up_price, down_price
-        
-    except Exception as e:
-        logger.warning(f"Token price fetch failed: {e}")
-        return 0.5, 0.5
+    up_price = 0.5
+    down_price = 0.5
+
+    # Helper to fetch with SSL fallback
+    def fetch_midpoint(token_id: str) -> Optional[float]:
+        for verify in [True, False]:
+            try:
+                resp = requests.get(
+                    f"{CLOB_API}/midpoint",
+                    params={'token_id': token_id},
+                    timeout=5,
+                    verify=verify
+                )
+                if resp.status_code == 200:
+                    mid = resp.json().get('mid')
+                    if mid is not None:
+                        return float(mid)
+            except Exception as e:
+                logger.debug(f"Midpoint fetch fail (verify={verify}): {e}")
+                if not verify:
+                    break
+        return None
+
+    up_mid = fetch_midpoint(market.up_token_id)
+    down_mid = fetch_midpoint(market.down_token_id)
+
+    if up_mid is not None:
+        up_price = up_mid
+    if down_mid is not None:
+        down_price = down_mid
+
+    return up_price, down_price
 
 
 def get_token_midpoint_price(token_id: str) -> Optional[float]:
     """Get current midpoint price for any token from CLOB API.
-    
+
     Used for liquidating positions during market-switch cleanup.
-    
+
     Args:
         token_id: CLOB token ID
-        
+
     Returns:
         Midpoint price (0-1 probability) or None if fetch fails
     """
-    try:
-        resp = requests.get(
-            f"{CLOB_API}/midpoint",
-            params={'token_id': token_id},
-            timeout=5
-        )
-        if resp.status_code == 200:
-            price = float(resp.json().get('mid', 0.5))
-            if price > 0:
-                return price
-    except Exception as e:
-        logger.warning(f"Midpoint fetch failed for {token_id[:30]}: {e}")
+    for verify in [True, False]:
+        try:
+            resp = requests.get(
+                f"{CLOB_API}/midpoint",
+                params={'token_id': token_id},
+                timeout=5,
+                verify=verify
+            )
+            if resp.status_code == 200:
+                price = float(resp.json().get('mid', 0.5))
+                if price > 0:
+                    return price
+        except Exception as e:
+            logger.debug(f"Midpoint fetch fail for {token_id[:30]} (verify={verify}): {e}")
+            if not verify:
+                break
     return None
 
 
@@ -772,31 +804,43 @@ def run_monitor(
 
             # 2) Binance REST if WS failed or unavailable
             if not btc_price:
-                try:
-                    resp = requests.get(
-                        "https://api.binance.com/api/v3/ticker/price",
-                        params={'symbol': 'BTCUSDT'},
-                        timeout=5
-                    )
-                    if resp.status_code == 200:
-                        btc_price = float(resp.json()['price'])
-                        logger.debug(f"BTC price from Binance REST: ${btc_price:,.2f}")
-                except Exception as e:
-                    logger.warning(f"Binance REST failed: {e}")
+                for verify in [True, False]:  # try normal first, then skip verification
+                    try:
+                        resp = requests.get(
+                            "https://api.binance.com/api/v3/ticker/price",
+                            params={'symbol': 'BTCUSDT'},
+                            timeout=5,
+                            verify=verify
+                        )
+                        if resp.status_code == 200:
+                            btc_price = float(resp.json()['price'])
+                            logger.debug(f"BTC price from Binance REST (verify={verify}): ${btc_price:,.2f}")
+                            break
+                    except Exception as e:
+                        logger.warning(f"Binance REST failed (verify={verify}): {e}")
+                        if not verify:
+                            # second attempt also failed; give up on Binance
+                            break
+                        # else loop will retry with verify=False
 
             # 3) CoinGecko REST as final fallback
             if not btc_price:
-                try:
-                    resp = requests.get(
-                        f"{COINGECKO_API}/simple/price",
-                        params={'ids': 'bitcoin', 'vs_currencies': 'usd'},
-                        timeout=5
-                    )
-                    if resp.status_code == 200:
-                        btc_price = float(resp.json()['bitcoin']['usd'])
-                        logger.debug(f"BTC price from CoinGecko: ${btc_price:,.2f}")
-                except Exception as e:
-                    logger.error(f"CoinGecko REST failed: {e}")
+                for verify in [True, False]:
+                    try:
+                        resp = requests.get(
+                            f"{COINGECKO_API}/simple/price",
+                            params={'ids': 'bitcoin', 'vs_currencies': 'usd'},
+                            timeout=5,
+                            verify=verify
+                        )
+                        if resp.status_code == 200:
+                            btc_price = float(resp.json()['bitcoin']['usd'])
+                            logger.debug(f"BTC price from CoinGecko (verify={verify}): ${btc_price:,.2f}")
+                            break
+                    except Exception as e:
+                        logger.warning(f"CoinGecko REST failed (verify={verify}): {e}")
+                        if not verify:
+                            break
 
             # Give up if all sources failed
             if not btc_price or btc_price <= 0:
