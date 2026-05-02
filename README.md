@@ -1,13 +1,13 @@
 # Polymarket BTC 15-Minute Market Bot
 
-Forecasting Bitcoin "Up or Down" 15-minute markets on Polymarket using Google technical indicators.
+Trading Bitcoin "Up or Down" 15-minute markets on Polymarket using technical indicators.
 
 ## What It Does
 
 1. Fetches BTC price history from CoinGecko (hourly, 30 days)
 2. Computes technical indicators (TPD, CVD, OBI, time decay) and combines them into trading signals
-3. Compares technical indicator-based direction prediction to Polymarket odds
-4. Generates BUY_UP / BUY_DOWN / HOLD signals based on aggregated signal strength
+3. Compares aggregated signal direction and strength to Polymarket odds
+4. Generates BUY_UP / BUY_DOWN / HOLD signals based on aggregated confidence
 
 ## How BTC 15-Min Markets Work
 
@@ -33,8 +33,6 @@ cd polymarket-trading-bot
 python3 -m venv .venv --python 3.11
 source .venv/bin/activate
 pip install -r requirements.txt
-
-# technical indicator-based must be installed from source (not on PyPI)
 ```
 
 ## Usage
@@ -48,13 +46,17 @@ The bot logs observations to `data/observations/` (CSV) and records trades in th
 
 ## Trading Signal Logic
 
-The bot compares:
-- **technical indicator-based UP probability**: % of forecasted steps above current price
-- **Polymarket UP price**: Market's implied probability
+The bot computes four technical indicators:
+- **TPD** (Token Price Disagreement): mispricing between BTC price and Polymarket's PTB
+- **CVD** (Cumulative Volume Delta): Binance trade flow momentum
+- **OBI** (Order Book Imbalance): real-time orderbook bid/ask pressure
+- **Time Decay**: optimal trading window factor
+
+These are combined with weights (TPD 0.35, CVD 0.30, OBI 0.20, time_decay 0.15) into a single confidence score (0–1).
 
 Signal thresholds:
-- If technical indicator-based UP prob > Polymarket UP price + 0.15 → **BUY_UP**
-- If technical indicator-based UP prob < Polymarket UP price - 0.15 → **BUY_DOWN**
+- If confidence ≥ 0.65 and ≥3 signals agree on UP → **BUY_UP**
+- If confidence ≥ 0.65 and ≥3 signals agree on DOWN → **BUY_DOWN**
 - Otherwise → **HOLD**
 
 ## Project Structure
@@ -63,40 +65,32 @@ Signal thresholds:
 src/
   data_collection/
     btc_price_fetcher.py    # CoinGecko BTC price history
-    polymarket_client.py    # Polymarket Gamma + CLOB APIs
     btc_websocket.py        # Binance BTC/USDT WebSocket (optional)
   analysis/
     indicators.py           # TPD, CVD, OBI calculations
     signal_aggregator.py   # Signal combination and decision logic
   trading/
     order_executor.py       # CLOB V2 order execution
-    enhanced_executor.py   # With circuit breaker + DB persistence
     trade_journal.py       # YAML journaling
     stop_loss.py           # Stop-loss management
-    kelly_sizer.py         # Position sizing
   utils/
     db_persistence.py      # SQLite database layer
     monitoring.py          # Prometheus metrics
-    circuit_breaker.py    # Trading halt logic
     logger.py             # Logging configuration
 scripts/
   btc_15m_monitor_v2.py    # Main bot (monitor + signal)
-  btc_15m_monitor.py       # Original monitor (legacy)
   dashboard/
-    app.py                 # Flask metrics dashboard
-    app_v2.py               # Enhanced dashboard
+    app_v2.py               # Enhanced Flask metrics dashboard
 tests/
   test_btc_fetcher.py
   test_order_executor.py
-  test_polymarket_client.py
-  test_signal_aggregator.py
 docs/
 ```
 
 ## Example Output
 
 ```
-BTC 15min Signal(s) [UP]: gap=$+42.50, CVD1m=+1,245, OBI=+0.32, Score=785
+BTC 15min Signal(s) [UP]: gap=$+42.50, CVD1m=+1,245, OBI=+0.32, Confidence=0.82
 Signal: BUY_UP | Confidence: 0.82 | Market: btc-updown-15m-XXXXX
 Trade recorded to journal (dry-run)
 ```

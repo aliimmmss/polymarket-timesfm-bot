@@ -45,8 +45,6 @@ class TradeRecord:
     dry_run: bool
 
 
-
-
 @dataclass
 class PositionRecord:
     """Record of current position."""
@@ -206,23 +204,6 @@ class TradingDatabase:
                     (status, trade_id)
                 )
             conn.commit()
-    
-    def save_forecast(self, forecast: ForecastRecord) -> int:
-        """Save forecast to database."""
-        with self._get_connection() as conn:
-            cursor = conn.execute("""
-                INSERT INTO forecasts (timestamp, btc_price, forecast_values, up_probability, horizon)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                forecast.timestamp.isoformat(),
-                forecast.btc_price,
-                json.dumps(forecast.forecast_values),
-                forecast.up_probability,
-                forecast.horizon,
-            ))
-            conn.commit()
-            return cursor.lastrowid
-    
     def save_position(self, position: PositionRecord):
         """Save or update position."""
         with self._get_connection() as conn:

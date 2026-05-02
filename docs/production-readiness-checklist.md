@@ -25,10 +25,10 @@
 |------|--------|-------|
 | BTC price fetching | ✅ | CoinGecko API integration |
 | Polymarket API | ✅ | Gamma + CLOB endpoints |
-| Signal generation | ✅ | Comparison logic complete |
+| Signal generation | ✅ | TPD + CVD + OBI + time decay |
 | Order executor | ✅ | DRY_RUN safety, py-clob-client |
-| Portfolio manager | ✅ | Full position tracking (926 loc) |
-| Paper trading pipeline | ✅ | `run_paper_trading.py` complete |
+| Position tracking | ✅ | Via trade journal |
+| Paper trading pipeline | ✅ | `btc_15m_monitor_v2.py` complete |
 
 **All core components implemented.**
 
@@ -69,18 +69,17 @@ class CircuitBreaker:
 tests/
 ├── __init__.py                    ✅
 ├── conftest.py                     ✅ Fixtures
-├── test_signal_generator.py      ✅ 8 test cases
-├── test_order_executor.py          ✅ 12 test cases
-└── test_forecaster.py              ✅ 4 test cases
+├── test_btc_fetcher.py          ✅ 8 test cases
+└── test_order_executor.py          ✅ 12 test cases
 ```
 
 ### Missing Tests (Critical)
 
 | Module | Priority | Status |
 |--------|----------|--------|
-| `polymarket_client.py` | 🔴 High | ❌ |
+| `btc_price_fetcher.py` | 🟡 Medium | ✅ |
 | `btc_price_fetcher.py` | 🔴 High | ❌ |
-| `portfolio_manager.py` | 🟡 Medium | ❌ |
+| `indicators.py` | 🟢 Low | ❌ |
 | `stop_loss.py` | 🟡 Medium | ❌ |
 | `indicators.py` | 🟢 Low | ❌ |
 | `integration/` | 🔴 High | ❌ |
@@ -120,14 +119,6 @@ CREATE TABLE trades (
     exit_price NUMERIC,
     pnl NUMERIC,
     executed_at TIMESTAMP
-);
-
-CREATE TABLE forecasts (
-    id SERIAL PRIMARY KEY,
-    market_id TEXT,
-    forecast_values JSONB,
-    confidence NUMERIC,
-    generated_at TIMESTAMP
 );
 ```
 
@@ -201,7 +192,7 @@ METRICS = {
 - [ ] Test py-clob-client auth
 - [ ] Allocate $1000 paper trading budget
 - [ ] Run tests: `pytest -v`
-- [ ] Run paper trading: `python scripts/run_paper_trading.py`
+- [ ] Run paper trading: `python scripts/btc_15m_monitor_v2.py --monitor`
 - [ ] Monitor for 48 hours
 
 ### Go-Live (Live Trading)
@@ -220,7 +211,7 @@ METRICS = {
 |-------|----------|---------|
 | web_search API rate limited (Tavily) | 🟡 | N/A (external) |
 | Git push auth error | 🟠 | 1 day (needs token) |
-| portfolio_manager symlink issue | 🟢 | 1 hour |
+|  | 🟢 | 1 hour |
 | No database persistence | 🟠 | 2 days |
 
 ---
@@ -230,7 +221,7 @@ METRICS = {
 **BLOCKERS (Must Fix):**
 1. ❌ Integration test suite
 2. ❌ Database persistence
-3. 🟡 Emergency circuit breaker
+3. 🟡 Enhanced monitoring alerts
 
 **NICE TO HAVE:**
 1. Docker container
@@ -246,10 +237,10 @@ METRICS = {
 ```bash
 # Immediate start:
 source .venv/bin/activate
-python scripts/run_paper_trading.py --single
+python scripts/btc_15m_monitor_v2.py --duration 300 --dry-run
 
 # Continuous monitoring:
-python scripts/run_paper_trading.py --monitor --interval 300
+python scripts/btc_15m_monitor_v2.py --monitor --interval 300
 ```
 
 ---
