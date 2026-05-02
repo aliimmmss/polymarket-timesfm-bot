@@ -694,6 +694,7 @@ def run_monitor(
     # Market tracking
     current_market = None
     cached_ptb = None
+    btc_price_cache = {'price': None, 'timestamp': 0}  # Cache to avoid rate limits (30s TTL)
     start_time = time.time()
     
     try:
@@ -787,63 +788,71 @@ def run_monitor(
                 ptb = cached_ptb
                 ptb_source = 'cached'
             
-            # Get BTC price (WS → Binance REST → CoinGecko fallback chain)
-            btc_price = None
+            # Get BTC price (WS → Binance REST → CoinGecko fallback chain, with 30s cache)
+            now = time.time()
+            CACHE_TTL = 30  # seconds
+            if btc_price_cache['price'] is not None and now - btc_price_cache['timestamp'] < CACHE_TTL:
+                btc_price = btc_price_cache['price']
+                logger.debug(f"BTC price from cache: ${btc_price:,.2f}")
+            else:
+                btc_price = None
 
-            # 1) Try WebSocket if available
-            if ws:
-                btc_price = ws.get_current_price()
-                if btc_price:
-                    logger.debug(f"BTC price from WebSocket: ${btc_price:,.2f}")
-                else:
-                    logger.warning("WebSocket price unavailable, trying REST fallback...")
+                # 1) Try WebSocket if available
+                if ws:
+                    btc_price = ws.get_current_price()
+                    if btc_price:
+                        logger.debug(f"BTC price from WebSocket: ${btc_price:,.2f}")
+                    else:
+                        logger.warning("WebSocket price unavailable, trying REST fallback...")
 
-            # 2) Binance REST if WS failed or unavailable
-            if not btc_price:
-                for verify in [True, False]:  # try normal first, then skip verification
-                    try:
-                        resp = requests.get(
-                            "https://api.binance.com/api/v3/ticker/price",
-                            params={'symbol': 'BTCUSDT'},
-                            timeout=5,
-                            verify=verify
-                        )
-                        if resp.status_code == 200:
-                            btc_price = float(resp.json()['price'])
-                            logger.debug(f"BTC price from Binance REST (verify={verify}): ${btc_price:,.2f}")
-                            break
-                    except Exception as e:
-                        logger.warning(f"Binance REST failed (verify={verify}): {e}")
-                        if not verify:
-                            # second attempt also failed; give up on Binance
-                            break
-                        # else loop will retry with verify=False
+                # 2) Binance REST if WS failed or unavailable
+                if not btc_price:
+                    for verify in [True, False]:  # try normal first, then skip verification
+                        try:
+                            resp = requests.get(
+                                "https://api.binance.com/api/v3/ticker/price",
+                                params={'symbol': 'BTCUSDT'},
+                                timeout=5,
+                                verify=verify
+                            )
+                            if resp.status_code == 200:
+                                btc_price = float(resp.json()['price'])
+                                logger.debug(f"BTC price from Binance REST (verify={verify}): ${btc_price:,.2f}")
+                                break
+                        except Exception as e:
+                            logger.warning(f"Binance REST failed (verify={verify}): {e}")
+                            if not verify:
+                                break
 
-            # 3) CoinGecko REST as final fallback
-            if not btc_price:
-                for verify in [True, False]:
-                    try:
-                        resp = requests.get(
-                            f"{COINGECKO_API}/simple/price",
-                            params={'ids': 'bitcoin', 'vs_currencies': 'usd'},
-                            timeout=5,
-                            verify=verify
-                        )
-                        if resp.status_code == 200:
-                            btc_price = float(resp.json()['bitcoin']['usd'])
-                            logger.debug(f"BTC price from CoinGecko (verify={verify}): ${btc_price:,.2f}")
-                            break
-                    except Exception as e:
-                        logger.warning(f"CoinGecko REST failed (verify={verify}): {e}")
-                        if not verify:
-                            break
+                # 3) CoinGecko REST as final fallback
+                if not btc_price:
+                    for verify in [True, False]:
+                        try:
+                            resp = requests.get(
+                                f"{COINGECKO_API}/simple/price",
+                                params={'ids': 'bitcoin', 'vs_currencies': 'usd'},
+                                timeout=5,
+                                verify=verify
+                            )
+                            if resp.status_code == 200:
+                                btc_price = float(resp.json()['bitcoin']['usd'])
+                                logger.debug(f"BTC price from CoinGecko (verify={verify}): ${btc_price:,.2f}")
+                                break
+                        except Exception as e:
+                            logger.warning(f"CoinGecko REST failed (verify={verify}): {e}")
+                            if not verify:
+                                break
+
+                # Update cache if we got a valid price
+                if btc_price and btc_price > 0:
+                    btc_price_cache = {'price': btc_price, 'timestamp': now}
 
             # Give up if all sources failed
             if not btc_price or btc_price <= 0:
                 logger.warning("BTC price unavailable from all sources, skipping cycle")
                 time.sleep(interval)
                 continue
-            
+
             # Get token prices
             up_price, down_price = get_token_prices(market)
             
