@@ -30,3 +30,6 @@ rich>=13.0.0
 
 # Optional: Flask web dashboard
 flask>=3.0.0
+
+# Optional: Streamlit dashboard
+streamlit>=1.25.0
