@@ -102,6 +102,33 @@ SIGNAL_C_MAX_PRICE = 0.50
 DRY_RUN = True
 MAX_ORDER_SIZE = 5.0
 
+# Position persistence (crash recovery)
+POSITIONS_DIR = Path.home() / ".polymarket_bot"
+POSITIONS_FILE = POSITIONS_DIR / "positions.json"
+
+
+def load_positions() -> Dict[str, dict]:
+    """Load open positions from disk if available."""
+    if POSITIONS_FILE.exists():
+        try:
+            with open(POSITIONS_FILE, 'r') as f:
+                data = json.load(f)
+                logger.info(f"Loaded {len(data)} open positions from {POSITIONS_FILE}")
+                return data
+        except Exception as e:
+            logger.error(f"Failed to load positions: {e}")
+    return {}
+
+
+def save_positions(positions: Dict[str, dict]) -> None:
+    """Save open positions to disk."""
+    try:
+        POSITIONS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(POSITIONS_FILE, 'w') as f:
+            json.dump(positions, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save positions: {e}")
+
 
 # ============================================================================
 # DATA CLASSES
@@ -345,6 +372,32 @@ def get_token_prices(market: Market) -> Tuple[float, float]:
     except Exception as e:
         logger.warning(f"Token price fetch failed: {e}")
         return 0.5, 0.5
+
+
+def get_token_midpoint_price(token_id: str) -> Optional[float]:
+    """Get current midpoint price for any token from CLOB API.
+    
+    Used for liquidating positions during market-switch cleanup.
+    
+    Args:
+        token_id: CLOB token ID
+        
+    Returns:
+        Midpoint price (0-1 probability) or None if fetch fails
+    """
+    try:
+        resp = requests.get(
+            f"{CLOB_API}/midpoint",
+            params={'token_id': token_id},
+            timeout=5
+        )
+        if resp.status_code == 200:
+            price = float(resp.json().get('mid', 0.5))
+            if price > 0:
+                return price
+    except Exception as e:
+        logger.warning(f"Midpoint fetch failed for {token_id[:30]}: {e}")
+    return None
 
 
 # ============================================================================
@@ -594,7 +647,21 @@ def run_monitor(
 
     # Track open positions for exit logging
     # Key: token_id, Value: dict with market, entry_price, size_usdc, size_tokens, order_id, buy_time
-    open_positions = {}
+    open_positions = load_positions()
+    logger.info(f"Started with {len(open_positions)} open positions from disk")
+
+    # Rehydrate StopLossManager from loaded positions
+    if stop_loss and open_positions:
+        for token_id, pos in open_positions.items():
+            stop_loss.add_position(
+                token_id=token_id,
+                buy_price=pos['entry_price'],
+                buy_time=pos['buy_time'],
+                side='up',  # we only trade UP tokens
+                size=pos['size_usdc'],
+                take_profit_pct=0.5,
+            )
+        logger.info("Stop-loss manager rehydrated from saved positions")
     
     # Market tracking
     current_market = None
@@ -618,6 +685,65 @@ def run_monitor(
             # Check if market changed
             if current_market is None or market.slug != current_market.slug:
                 logger.info(f"New market: {market.slug}")
+                
+                # MARKET-SWITCH CLEANUP: Liquidate all open positions from previous market
+                if open_positions:
+                    logger.info(f"Market switch: liquidating {len(open_positions)} stale position(s)")
+                    for token_id, pos in list(open_positions.items()):
+                        try:
+                            # Get current price for this token via midpoint API
+                            sell_price = get_token_midpoint_price(token_id)
+                            if not sell_price or sell_price <= 0:
+                                logger.warning(f"Invalid price for {token_id[:30]}, using entry price fallback")
+                                sell_price = pos['entry_price']
+                            
+                            size_tokens = pos['size_tokens']
+                            
+                            # Execute FOK sell (fill-or-kill: immediate or cancel)
+                            if executor:
+                                sell_result = executor.sell_token(
+                                    token_id=token_id,
+                                    price=sell_price,
+                                    size_tokens=size_tokens,
+                                    order_type='FOK',
+                                )
+                                logger.info(f"Market-switch sell: {sell_result}")
+                            else:
+                                sell_result = {'success': True, 'order_id': 'DRY_RUN_EXIT_MSW'}
+                            
+                            # Calculate P&L
+                            entry = pos['entry_price']
+                            pnl_usdc = (sell_price - entry) * size_tokens
+                            pnl_pct = (sell_price - entry) / entry if entry else 0.0
+                            
+                            # Log exit with reason
+                            if trade_journal:
+                                try:
+                                    trade_journal.log_exit(
+                                        order_id=pos['order_id'],
+                                        market=pos['market'],
+                                        exit_price=sell_price,
+                                        pnl_usdc=pnl_usdc,
+                                        pnl_pct=pnl_pct,
+                                        exit_reason='market_switch',
+                                        lessons='',
+                                    )
+                                    logger.info("Exit logged (market_switch)")
+                                except Exception as e:
+                                    logger.error(f"Failed to log exit: {e}")
+                            
+                            # Cleanup
+                            if stop_loss:
+                                stop_loss.remove_position(token_id)
+                            open_positions.pop(token_id, None)
+                            
+                            # Persist updated positions
+                            save_positions(open_positions)
+                            
+                        except Exception as e:
+                            logger.error(f"Failed to liquidate {token_id[:30]}: {e}")
+                
+                # Now update to the new market
                 current_market = market
                 # Get PTB for new window
                 ptb, ptb_source = get_ptb(market.window_start)
@@ -793,6 +919,9 @@ def run_monitor(
                                 'buy_time': time.time(),
                             }
                             logger.info(f"Position registered for stop-loss monitoring: {token_id[:30]}...")
+
+                            # Persist open positions
+                            save_positions(open_positions)
                     except Exception as e:
                         logger.error(f"Failed to log trade: {e}")
 
@@ -856,6 +985,62 @@ def run_monitor(
                         stop_loss.remove_position(token_id)
                         open_positions.pop(token_id, None)
 
+                        # Persist updated positions
+                        save_positions(open_positions)
+
+            # MAX-HOLD TIMER: Exit any position held > 15 minutes
+            if open_positions:
+                now = time.time()
+                max_hold_sec = 15 * 60
+                for token_id, pos in list(open_positions.items()):
+                    if now - pos.get('buy_time', now) > max_hold_sec:
+                        logger.info(f"Max-hold timeout: exiting {token_id[:30]}... (held {now - pos['buy_time']:.0f}s)")
+                        try:
+                            # Use current up_price as exit price (approx)
+                            exit_price = up_price
+                            size_tokens = pos['size_tokens']
+                            
+                            if executor:
+                                sell_result = executor.sell_token(
+                                    token_id=token_id,
+                                    price=exit_price,
+                                    size_tokens=size_tokens,
+                                    order_type='FOK',
+                                )
+                                logger.info(f"Max-hold sell: {sell_result}")
+                            else:
+                                sell_result = {'success': True, 'order_id': 'DRY_RUN_EXIT_MAXHOLD'}
+                            
+                            # P&L
+                            entry = pos['entry_price']
+                            pnl_usdc = (exit_price - entry) * size_tokens
+                            pnl_pct = (exit_price - entry) / entry if entry else 0.0
+                            
+                            # Log exit
+                            if trade_journal:
+                                try:
+                                    trade_journal.log_exit(
+                                        order_id=pos['order_id'],
+                                        market=pos['market'],
+                                        exit_price=exit_price,
+                                        pnl_usdc=pnl_usdc,
+                                        pnl_pct=pnl_pct,
+                                        exit_reason='max_hold',
+                                        lessons='',
+                                    )
+                                    logger.info("Exit logged (max_hold)")
+                                except Exception as e:
+                                    logger.error(f"Failed to log exit: {e}")
+                            
+                            # Cleanup
+                            if stop_loss:
+                                stop_loss.remove_position(token_id)
+                            open_positions.pop(token_id, None)
+                            save_positions(open_positions)
+                            
+                        except Exception as e:
+                            logger.error(f"Max-hold exit failed for {token_id[:30]}: {e}")
+
             time.sleep(interval)
     
     except KeyboardInterrupt:
@@ -866,6 +1051,8 @@ def run_monitor(
         if ws:
             ws.stop()
         csv_logger.close()
+        # Final position save (should already be clean, but ensure consistency)
+        save_positions(open_positions)
         logger.info("Monitor stopped")
 
 

@@ -18,6 +18,7 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -166,36 +167,36 @@ class OrderExecutor:
     
     def _get_market_config(self, token_id: str) -> Tuple[str, bool]:
         """Get tickSize and negRisk for a market.
-        
+
         Required for order creation in V2.
-        
+        Tries SDK methods first, falls back to direct REST API.
+
         Args:
             token_id: CLOB token ID
-            
+
         Returns:
             (tick_size, neg_risk) tuple - tick_size as string, neg_risk as bool
         """
         if self.dry_run:
             return ("0.01", False)
-        
+
+        tick_size = "0.01"  # Default 1¢
+        neg_risk = False     # Default for binary markets
+
         try:
-            # V2 client may expose get_market method
-            tick_size = "0.01"  # Default 1¢
-            neg_risk = False     # Default for binary markets
-            
+            # Try V2 SDK methods if available
             if hasattr(self._client, 'get_market'):
                 market = self._client.get_market(token_id)
                 if market:
-                    # Extract tick_size (might be string '0.01' or numeric)
                     ts = market.get('tick_size') or market.get('tickSize')
                     if ts:
                         tick_size = str(ts)
-                    # Extract neg_risk
                     nr = market.get('neg_risk')
                     if nr is not None:
                         neg_risk = bool(nr)
-            
-            # Alternative: try dedicated methods if present
+                        return (tick_size, neg_risk)
+
+            # Try dedicated methods
             if hasattr(self._client, 'get_tick_size'):
                 ts = self._client.get_tick_size(token_id)
                 if ts:
@@ -204,11 +205,95 @@ class OrderExecutor:
                 nr = self._client.get_neg_risk(token_id)
                 if nr is not None:
                     neg_risk = bool(nr)
-                    
-            return (tick_size, neg_risk)
+                    return (tick_size, neg_risk)
+
         except Exception as e:
-            logger.warning(f"Could not fetch market config: {e}, using defaults")
-            return ("0.01", False)
+            logger.warning(f"SDK methods failed: {e}, trying direct REST...")
+
+        # FALLBACK: Direct REST call to CLOB exchange endpoint (public, no auth)
+        try:
+            resp = requests.get(
+                f"https://clob.polymarket.com/exchange/v2/market/{token_id}",
+                timeout=5
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                # Parse response — structure may vary, check common keys
+                ts = data.get('tick_size') or data.get('tickSize')
+                if ts:
+                    tick_size = str(ts)
+                nr = data.get('neg_risk')
+                if nr is not None:
+                    neg_risk = bool(nr)
+                logger.info(f"Market config from REST: tick_size={tick_size}, neg_risk={neg_risk}")
+                return (tick_size, neg_risk)
+        except Exception as e:
+            logger.warning(f"REST fallback failed: {e}")
+
+        # All methods failed — use safe defaults
+        logger.warning("All market config methods failed, using defaults (tick_size=0.01, neg_risk=False)")
+        return ("0.01", False)
+
+    def _call_with_retry(
+        self,
+        func,
+        max_attempts: int = 3,
+        base_delay: float = 1.0,
+        *args,
+        **kwargs
+    ) -> any:
+        """Call a function with exponential backoff retry on transient errors.
+
+        Retries on: Timeout, ConnectionError, 5xx HTTP, 429 Too Many Requests.
+        Does NOT retry on business logic errors (invalid order, insufficient balance).
+
+        Args:
+            func: Callable to execute
+            max_attempts: Maximum retry attempts (default 3)
+            base_delay: Base delay in seconds, doubles each retry (1 → 2 → 4)
+            *args, **kwargs: Arguments to pass to func
+
+        Returns:
+            Result from func on success
+
+        Raises:
+            Last exception if all attempts fail
+        """
+        last_exception = None
+        for attempt in range(max_attempts):
+            try:
+                return func(*args, **kwargs)
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_exception = e
+                if attempt < max_attempts - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"Network error: {e}. Retrying in {delay:.1f}s... (attempt {attempt + 1}/{max_attempts})")
+                    time.sleep(delay)
+                else:
+                    logger.error(f"Network error after {max_attempts} attempts: {e}")
+            except Exception as e:
+                # Check if it's an HTTP error with status code
+                if hasattr(e, 'response') and hasattr(e.response, 'status_code'):
+                    status = e.response.status_code
+                    if status in [429, 500, 502, 503, 504]:
+                        last_exception = e
+                        if attempt < max_attempts - 1:
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(f"HTTP {status} error. Retrying in {delay:.1f}s... (attempt {attempt + 1}/{max_attempts})")
+                            time.sleep(delay)
+                            continue
+                        else:
+                            logger.error(f"HTTP {status} error after {max_attempts} attempts")
+                    else:
+                        # Non-retryable HTTP error (4xx other than 429)
+                        raise
+                else:
+                    # Non-retryable exception
+                    raise
+        # If we get here, all retries failed
+        if last_exception:
+            raise last_exception
+        return None  # Shouldn't reach
     
     def buy_token(
         self,
@@ -338,9 +423,12 @@ class OrderExecutor:
                 'FAK': OrderType.FAK,
             }
             sdk_order_type = order_type_map.get(order_type.upper(), OrderType.GTC)
-            
-            # STEP: Create and post order
-            response = self._client.create_and_post_order(
+
+            # STEP: Create and post order (with retry on transient failures)
+            response = self._call_with_retry(
+                self._client.create_and_post_order,
+                max_attempts=3,
+                base_delay=1.0,
                 order_args=order_args,
                 options=options,
                 order_type=sdk_order_type,
