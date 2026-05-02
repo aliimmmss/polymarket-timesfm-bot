@@ -2,6 +2,7 @@
 
 from .order_executor import OrderExecutor, DRY_RUN, MAX_ORDER_SIZE_USDC
 from .stop_loss import StopLossManager, Position
+from .trade_journal import TradeJournal
 
 __all__ = [
     'OrderExecutor',
@@ -9,4 +10,5 @@ __all__ = [
     'Position',
     'DRY_RUN',
     'MAX_ORDER_SIZE_USDC',
+    'TradeJournal',
 ]
