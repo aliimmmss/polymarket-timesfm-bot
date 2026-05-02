@@ -64,7 +64,7 @@ def get_portfolio_stats() -> Dict:
     trades = get_latest_paper_trades(1000)
     
     if not trades:
-        return {'total_trades': 0, 'paper_balance': 1000.0, 'total_pnl': 0.0,
+        return {'total_trades': 0, 'paper_balance': 40.0, 'total_pnl': 0.0,
                 'win_rate': 0.0, 'wins': 0, 'losses': 0, 'avg_trade': 0.0,
                 'largest_win': 0.0, 'largest_loss': 0.0, 'sharpe': 0.0}
     
@@ -72,7 +72,7 @@ def get_portfolio_stats() -> Dict:
     wins = sum(1 for t in trades if (t.get('pnl') or 0) > 0)
     losses = sum(1 for t in trades if (t.get('pnl') or 0) < 0)
     win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
-    latest_balance = trades[0].get('paper_balance_after', 1000.0) if trades else 1000.0
+    latest_balance = trades[0].get('paper_balance_after', 40.0) if trades else 40.0
     
     # Calculate additional metrics
     pnls = [t.get('pnl', 0) or 0 for t in trades]
@@ -461,7 +461,7 @@ def create_templates():
     <div class="card">
         <h2>Portfolio</h2>
         <div class="stat">
-            <div class="stat-value" id="balance">$1,000.00</div>
+            <div class="stat-value" id="balance">$40.00</div>
             <div class="stat-label">Paper Balance</div>
         </div>
         <div class="stat" style="margin-top:1rem;">
