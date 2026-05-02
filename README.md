@@ -5,9 +5,9 @@ Forecasting Bitcoin "Up or Down" 15-minute markets on Polymarket using Google te
 ## What It Does
 
 1. Fetches BTC price history from CoinGecko (hourly, 30 days)
-2. Runs technical indicators time series forecasting (200M parameter model)
+2. Computes technical indicators (TPD, CVD, OBI, time decay) and combines them into trading signals
 3. Compares technical indicator-based direction prediction to Polymarket odds
-4. Generates BUY_UP / BUY_DOWN / HOLD signals based on disagreement
+4. Generates BUY_UP / BUY_DOWN / HOLD signals based on aggregated signal strength
 
 ## How BTC 15-Min Markets Work
 
@@ -41,10 +41,10 @@ pip install -r requirements.txt
 
 ```bash
 source .venv/bin/activate
-python scripts/btc_15m_monitor_v2.py --markets 3 --horizon 15
+python scripts/btc_15m_monitor_v2.py --duration 300 --interval 5 --dry-run
 ```
 
-Results are saved to `data/logs/` as JSON files.
+The bot logs observations to `data/observations/` (CSV) and records trades in the YAML trade journal.
 
 ## Trading Signal Logic
 
@@ -96,12 +96,9 @@ docs/
 ## Example Output
 
 ```
-TRADING SIGNAL:
-  technical indicator-based UP probability: 93.3% (14/15 steps)
-  Polymarket UP price: 15.5%
-  Disagreement: +0.78
-  SIGNAL: BUY_UP (confidence: 1.00)
-  Action: Market UNDERPRICES upside - consider buying UP token
+BTC 15min Signal(s) [UP]: gap=$+42.50, CVD1m=+1,245, OBI=+0.32, Score=785
+Signal: BUY_UP | Confidence: 0.82 | Market: btc-updown-15m-XXXXX
+Trade recorded to journal (dry-run)
 ```
 
 ## License
