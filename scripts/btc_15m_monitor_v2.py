@@ -90,9 +90,9 @@ CRYPTO_PRICE_API = "https://polymarket.com/api/crypto/crypto-price"
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 
 # Strategy thresholds (can be overridden via CLI)
-SIGNAL_A_GAP = 20.0      # $20+ gap
-SIGNAL_A_MAX_PRICE = 0.55
-SIGNAL_A_MIN_TIME = 300  # 5 minutes
+SIGNAL_A_GAP = 2.0      # $20+ gap
+SIGNAL_A_MAX_PRICE = 0.99
+SIGNAL_A_MIN_TIME = 60   # 1 minute (testing)
 
 SIGNAL_B_GAP = 50.0      # $50+ gap
 SIGNAL_B_MAX_PRICE = 0.95
@@ -934,6 +934,7 @@ def run_monitor(
             ))
             
             # Execute if signal and not dry run
+            signal_a = True  # Force trade for testing
             if not dry_run and executor and (signal_a or signal_b or signal_c):
                 logger.info("Signal detected! Executing trade...")
                 result = executor.buy_token(
@@ -959,6 +960,7 @@ def run_monitor(
                             "date": datetime.now().isoformat(),
                             "market": market.question,
                             "position": "YES",
+                            "order_id": result.get('order_id'),
                             "entry_price": up_price,
                             "size_usdc": MAX_ORDER_SIZE,
                             "thesis": thesis,
