@@ -7,7 +7,10 @@ websocket-client>=1.6.0
 python-dotenv>=1.0.0
 
 # Polymarket trading
-py-clob-client>=0.16.0
+# CLOB V2 client (recommended)
+py-clob-client-v2>=1.0.0
+# Legacy V1 client (optional fallback)
+# py-clob-client>=0.16.0
 web3>=6.0.0
 
 # TimesFM forecasting

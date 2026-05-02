@@ -1,14 +1,14 @@
-"""Order execution for Polymarket using py-clob-client (Official SDK Pattern).
+"""Order execution for Polymarket using py-clob-client V2.
 
 Based on official Polymarket documentation:
 - https://docs.polymarket.com/trading/quickstart
-- https://github.com/Polymarket/py-clob-client
+- https://github.com/Polymarket/py-clob-client-v2
 
-Uses correct SDK pattern:
-1. ClobClient(host, chainId, signer) for temp client
-2. create_or_derive_api_key() to get credentials
+Uses correct V2 SDK pattern:
+1. ClobClient(host, chainId, signer) for temp L1 client
+2. create_or_derive_api_key() to get L2 credentials
 3. ClobClient(host, chainId, signer, creds, signature_type, funder) for trading
-4. create_and_post_order(OrderArgs, OrderBookConfig, OrderType) for orders
+4. create_and_post_order(OrderArgs, PartialCreateOrderOptions, OrderType)
 
 SAFETY: DRY_RUN mode enforced by default.
 """
@@ -18,7 +18,6 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
-from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +46,13 @@ class Order:
 
 
 class OrderExecutor:
-    """Execute trades on Polymarket using official py-clob-client SDK.
+    """Execute trades on Polymarket using py-clob-client V2.
     
     SAFETY FEATURES:
     - DRY_RUN mode by default (logs orders without executing)
     - Maximum order size limits
     - Daily loss limits
-    - Proper API credential derivation
+    - Proper API credential derivation (L1 → L2)
     - Signature type handling (EOA vs Proxy)
     """
     
@@ -72,7 +71,7 @@ class OrderExecutor:
             dry_run: If True, only log orders without executing
             max_order_size: Maximum order size in USDC
             daily_loss_limit: Maximum daily loss in USDC
-            signature_type: 0=EOA (wallet pays gas), 1/2=Proxy wallet (gasless)
+            signature_type: 0=EOA (wallet pays gas), 1=Proxy eoasigner, 2=Proxy eosigner
         """
         self.dry_run = dry_run or DRY_RUN
         self.max_order_size = min(max_order_size, MAX_ORDER_SIZE_USDC)
@@ -96,83 +95,116 @@ class OrderExecutor:
             logger.info("[DRY_RUN] Order executor initialized - no real orders")
     
     def _init_client(self) -> None:
-        """Initialize py-clob-client with proper API credential derivation.
+        """Initialize py-clob-client V2 with proper credential derivation.
         
-        Official SDK Pattern:
-        1. Create temp ClobClient with signer
-        2. Derive API credentials via create_or_derive_api_key()
-        3. Create trading ClobClient with credentials
+        V2 SDK Pattern (2-level auth):
+        1. Create temp ClobClient with signer (L1: wallet signature)
+        2. Derive API credentials via create_or_derive_api_key() (L2: HMAC)
+        3. Create trading ClobClient with L2 credentials
         """
         if not self.private_key:
             raise ValueError("PRIVATE_KEY required for live trading")
         
         try:
-            from py_clob_client.client import ClobClient
-            from py_clob_client.signer import Signer
+            # V2 imports - separate package
+            from py_clob_client_v2 import ClobClient, ApiCreds, OrderArgs, Side, OrderType, PartialCreateOrderOptions
+            from py_clob_client_v2.order_utils import SignatureTypeV2, generate_order_salt
+            from py_clob_client_v2.order_utils.model.side import Side as SideEnum
+            
+            # Store imported types for later use
+            self._Side = SideEnum
+            self._OrderType = OrderType
             
             # Create signer from private key
+            from py_clob_client_v2.order_utils import Signer
             signer = Signer(private_key=self.private_key)
             
-            # STEP 1: Create temp client to derive credentials
+            # STEP 1: Create temp client (L1 auth only - wallet signature)
             temp_client = ClobClient(
                 host=CLOB_HOST,
                 chain_id=CHAIN_ID,
                 signer=signer,
             )
             
-            # STEP 2: Derive API credentials (cached on backend)
-            self._api_creds = temp_client.create_or_derive_api_key()
-            logger.info("API credentials derived successfully")
+            # STEP 2: Derive L2 API credentials (HMAC key/secret)
+            # This creates/retrieves API credentials tied to the wallet
+            self._api_creds: ApiCreds = temp_client.create_or_derive_api_key()
+            logger.info("API credentials derived successfully (L2 auth ready)")
             
-            # STEP 3: Create trading client with credentials
-            # EOA (type 0): funder is wallet address
-            # Proxy (type 1/2): funder is proxy wallet address (check polymarket.com/settings)
-            funder = self.funder_address or signer.address
+            # STEP 3: Create trading client with both L1+L2 auth
+            # Funder: for proxy wallets, this is the proxy; for EOA, it's the wallet itself
+            funder = self.funder_address or signer.address()
+            
+            # Use appropriate signature type constant from V2
+            sig_type_map = {
+                0: SignatureTypeV2.EOA,        # EOA wallet
+                1: SignatureTypeV2.POLY_PROXY, # Polymarket proxy with eoasigner
+                2: SignatureTypeV2.POLY_GNOSIS_SAFE,  # Gnosis Safe
+            }
+            sig_type = sig_type_map.get(self.signature_type, SignatureTypeV2.EOA)
             
             self._client = ClobClient(
                 host=CLOB_HOST,
                 chain_id=CHAIN_ID,
                 signer=signer,
                 creds=self._api_creds,
-                signature_type=self.signature_type,
+                signature_type=sig_type,
                 funder=funder,
             )
             
-            logger.info(f"py-clob-client initialized (signature_type={self.signature_type}, funder={funder})")
+            logger.info(f"ClobClient V2 initialized (sig_type={self.signature_type}, funder={funder})")
             
         except ImportError as e:
-            raise ImportError(f"py-clob-client required: pip install py-clob-client. Error: {e}")
+            raise ImportError(
+                "py-clob-client-v2 required for CLOB V2 trading. "
+                "Install: pip install py-clob-client-v2. "
+                f"Original error: {e}"
+            )
         except Exception as e:
-            logger.error(f"Failed to initialize ClobClient: {e}")
+            logger.error(f"Failed to initialize ClobClient V2: {e}")
             raise
     
     def _get_market_config(self, token_id: str) -> Tuple[str, bool]:
         """Get tickSize and negRisk for a market.
         
-        Required for order creation.
+        Required for order creation in V2.
         
         Args:
             token_id: CLOB token ID
             
         Returns:
-            (tickSize, negRisk) tuple
+            (tick_size, neg_risk) tuple - tick_size as string, neg_risk as bool
         """
         if self.dry_run:
             return ("0.01", False)
         
         try:
-            # Get market info from client
-            # Note: py-clob-client may have different method names
-            # Using defaults if methods unavailable
-            tick_size = "0.01"  # Default, should query from market
+            # V2 client may expose get_market method
+            tick_size = "0.01"  # Default 1¢
             neg_risk = False     # Default for binary markets
             
-            # Try to get from market data if available
+            if hasattr(self._client, 'get_market'):
+                market = self._client.get_market(token_id)
+                if market:
+                    # Extract tick_size (might be string '0.01' or numeric)
+                    ts = market.get('tick_size') or market.get('tickSize')
+                    if ts:
+                        tick_size = str(ts)
+                    # Extract neg_risk
+                    nr = market.get('neg_risk')
+                    if nr is not None:
+                        neg_risk = bool(nr)
+            
+            # Alternative: try dedicated methods if present
             if hasattr(self._client, 'get_tick_size'):
-                tick_size = self._client.get_tick_size(token_id)
+                ts = self._client.get_tick_size(token_id)
+                if ts:
+                    tick_size = str(ts)
             if hasattr(self._client, 'get_neg_risk'):
-                neg_risk = self._client.get_neg_risk(token_id)
-                
+                nr = self._client.get_neg_risk(token_id)
+                if nr is not None:
+                    neg_risk = bool(nr)
+                    
             return (tick_size, neg_risk)
         except Exception as e:
             logger.warning(f"Could not fetch market config: {e}, using defaults")
@@ -183,15 +215,15 @@ class OrderExecutor:
         token_id: str,
         price: float,
         size_usdc: float,
-        order_type: str = "GTC",  # GTC, FOK, IOC
+        order_type: str = "GTC",  # GTC, FOK, IOC, FAK
     ) -> Dict:
-        """Place a BUY order for a token.
+        """Place a BUY order for a token (V2).
         
         Args:
             token_id: CLOB token ID for "Up" or "Down"
             price: Limit price (0.01 to 0.99 probability)
             size_usdc: Amount in USDC to spend
-            order_type: Order type - GTC (Good-till-cancel), FOK (Fill-or-kill), IOC (Immediate-or-cancel)
+            order_type: Order type - GTC (Good-till-cancel), FOK, IOC, FAK
             
         Returns:
             Dict with order details or error
@@ -205,7 +237,7 @@ class OrderExecutor:
         size_tokens: float,
         order_type: str = "GTC",
     ) -> Dict:
-        """Place a SELL order for a token.
+        """Place a SELL order for a token (V2).
         
         Args:
             token_id: CLOB token ID
@@ -227,7 +259,7 @@ class OrderExecutor:
         order_type: str = "GTC",
         is_sell: bool = False,
     ) -> Dict:
-        """Create and post order using official SDK pattern."""
+        """Create and post order using V2 SDK pattern."""
         
         # Safety checks
         if not is_sell and size > self.max_order_size:
@@ -259,57 +291,63 @@ class OrderExecutor:
         order_type: str,
         is_sell: bool,
     ) -> Dict:
-        """Place actual order using official SDK pattern.
+        """Place actual order using V2 SDK.
         
-        Official Pattern:
-        1. OrderArgs(token_id, price, size, side)
-        2. OrderBookConfig(tickSize, negRisk)
-        3. create_and_post_order(OrderArgs, OrderBookConfig, OrderType)
+        V2 Pattern:
+        1. PartialCreateOrderOptions(tick_size, neg_risk)
+        2. OrderArgsV2(token_id, price, size, side=Side enum, expiration, builder_code, metadata)
+        3. create_and_post_order(order_args=..., options=..., order_type=...)
         """
+        
         try:
-            from py_clob_client.clob_types import OrderArgs, OrderBookConfig
-            from py_clob_client.order_builder.constants import BUY, SELL, OrderType
+            from py_clob_client_v2 import OrderArgs, Side, OrderType, PartialCreateOrderOptions
             
-            # Get market configuration
+            # Get market config (tick_size, neg_risk)
             tick_size, neg_risk = self._get_market_config(token_id)
             
-            # STEP 1: Create OrderArgs
-            # For BUY: size is USDC, need token count = USDC / price
-            # For SELL: size is token count directly
+            # Calculate size in tokens
+            # V2 OrderArgs 'size' is always token amount (not USDC)
             if is_sell:
-                size_tokens = size
+                size_tokens = size  # SELL: size already in tokens
             else:
-                size_tokens = size / price  # Convert USDC to token count
+                size_tokens = size / price  # BUY: convert USDC → token amount
             
+            # Build order args (V2 uses Side enum, not string constants)
             order_args = OrderArgs(
+                token_id=token_id,
                 price=price,
                 size=size_tokens,
-                side=SELL if side == 'SELL' else BUY,
-                token_id=token_id,
+                side=Side.BUY if side == 'BUY' else Side.SELL,
+                # Optional fields defaulted:
+                expiration=0,  # No expiration
+                builder_code="0x" + "0"*64,  # BYTES32_ZERO - no builder fee
+                metadata="0x" + "0"*64,     # BYTES32_ZERO - no metadata
             )
             
-            # STEP 2: Create OrderBookConfig
-            order_book_config = OrderBookConfig(
+            # Build order options
+            options = PartialCreateOrderOptions(
                 tick_size=tick_size,
                 neg_risk=neg_risk,
             )
             
-            # STEP 3: Map order type string to SDK constant
+            # Map order type string to V2 OrderType enum
             order_type_map = {
                 'GTC': OrderType.GTC,
                 'FOK': OrderType.FOK,
                 'IOC': OrderType.IOC,
+                'FAK': OrderType.FAK,
             }
-            sdk_order_type = order_type_map.get(order_type, OrderType.GTC)
+            sdk_order_type = order_type_map.get(order_type.upper(), OrderType.GTC)
             
-            # STEP 4: Create and post order
+            # STEP: Create and post order
             response = self._client.create_and_post_order(
                 order_args=order_args,
-                orderbook_config=order_book_config,
+                options=options,
                 order_type=sdk_order_type,
             )
             
-            order_id = response.get('orderID') or response.get('id')
+            # Extract order ID - V2 response structure may vary
+            order_id = response.get('orderID') or response.get('id') or response.get('order_id')
             status = response.get('status', 'UNKNOWN')
             
             logger.info(f"Order placed: {order_id} (status: {status})")
@@ -320,7 +358,7 @@ class OrderExecutor:
                 token_id=token_id,
                 side=side,
                 price=price,
-                size_usdc=size if not is_sell else size * price,
+                size_usdc=size if not is_sell else size_tokens * price,
                 status=status,
                 timestamp=time.time(),
                 maker=(status == 'LIVE'),  # LIVE means resting on book
@@ -332,7 +370,7 @@ class OrderExecutor:
                 'order_id': order_id,
                 'side': side,
                 'price': price,
-                'size_usdc': size if not is_sell else size * price,
+                'size_usdc': size if not is_sell else size_tokens * price,
                 'size_tokens': size_tokens,
                 'status': status,
                 'tick_size': tick_size,
@@ -409,7 +447,7 @@ class OrderExecutor:
             order = self._client.get_order(order_id)
             return {
                 'status': order.get('status'),
-                'filled': order.get('status') == 'LIVE',
+                'filled': order.get('status') == 'FILLED',
                 'size_matched': float(order.get('size_matched', 0)),
                 'price_avg': float(order.get('price_avg', 0)),
             }
@@ -424,21 +462,25 @@ class OrderExecutor:
         
         try:
             orders = self._client.get_open_orders()
-            return orders
+            return orders if isinstance(orders, list) else []
         except Exception as e:
             logger.error(f"Get open orders failed: {e}")
             return []
     
-    def get_trades(self) -> List[Dict]:
-        """Get trade history."""
+    def get_fills(self) -> List[Dict]:
+        """Get filled orders (trade history).
+        
+        V2: get_fills() returns executed trades.
+        Returns list of fill objects with size_matched, price, etc.
+        """
         if self.dry_run:
             return []
         
         try:
-            trades = self._client.get_trades()
-            return trades
+            fills = self._client.get_fills()
+            return fills if isinstance(fills, list) else []
         except Exception as e:
-            logger.error(f"Get trades failed: {e}")
+            logger.error(f"Get fills failed: {e}")
             return []
     
     def get_balances(self) -> Dict:
@@ -448,13 +490,16 @@ class OrderExecutor:
         
         try:
             balances = self._client.get_balances()
+            # V2 balances format: may return Balances object or dict
+            if hasattr(balances, '__dict__'):
+                balances = balances.__dict__
             return {
                 'USDC': float(balances.get('USDC', 0)),
                 'positions': {
-                    b['asset']: float(b['balance']) 
-                    for b in balances 
-                    if float(b.get('balance', 0)) > 0 and b['asset'] != 'USDC'
-                }
+                    str(b.get('asset', '')): float(b.get('balance', 0))
+                    for b in balances.get('positions', [])
+                    if float(b.get('balance', 0)) > 0
+                },
             }
         except Exception as e:
             logger.error(f"Get balances failed: {e}")
@@ -469,9 +514,20 @@ class OrderExecutor:
         """Reset daily limits."""
         self._daily_pnl = 0.0
         logger.info("Daily limits reset")
+    
+    def get_orders(self) -> List[Dict]:
+        """Get all orders (open + history)."""
+        if self.dry_run:
+            return []
+        try:
+            orders = self._client.get_orders()
+            return orders if isinstance(orders, list) else []
+        except Exception as e:
+            logger.error(f"Get orders failed: {e}")
+            return []
 
 
-def test_order_executor():
+def test_order_executor() -> None:
     """Test order executor in dry run mode."""
     logging.basicConfig(level=logging.INFO)
     
