@@ -759,26 +759,50 @@ def run_monitor(
                 ptb = cached_ptb
                 ptb_source = 'cached'
             
-            # Get BTC price
+            # Get BTC price (WS → Binance REST → CoinGecko fallback chain)
+            btc_price = None
+
+            # 1) Try WebSocket if available
             if ws:
                 btc_price = ws.get_current_price()
-                if not btc_price:
-                    logger.warning("No BTC price from WebSocket")
-                    time.sleep(interval)
-                    continue
-            else:
-                # REST fallback
+                if btc_price:
+                    logger.debug(f"BTC price from WebSocket: ${btc_price:,.2f}")
+                else:
+                    logger.warning("WebSocket price unavailable, trying REST fallback...")
+
+            # 2) Binance REST if WS failed or unavailable
+            if not btc_price:
+                try:
+                    resp = requests.get(
+                        "https://api.binance.com/api/v3/ticker/price",
+                        params={'symbol': 'BTCUSDT'},
+                        timeout=5
+                    )
+                    if resp.status_code == 200:
+                        btc_price = float(resp.json()['price'])
+                        logger.debug(f"BTC price from Binance REST: ${btc_price:,.2f}")
+                except Exception as e:
+                    logger.warning(f"Binance REST failed: {e}")
+
+            # 3) CoinGecko REST as final fallback
+            if not btc_price:
                 try:
                     resp = requests.get(
                         f"{COINGECKO_API}/simple/price",
                         params={'ids': 'bitcoin', 'vs_currencies': 'usd'},
                         timeout=5
                     )
-                    btc_price = resp.json()['bitcoin']['usd']
+                    if resp.status_code == 200:
+                        btc_price = float(resp.json()['bitcoin']['usd'])
+                        logger.debug(f"BTC price from CoinGecko: ${btc_price:,.2f}")
                 except Exception as e:
-                    logger.error(f"BTC price fetch failed: {e}")
-                    time.sleep(interval)
-                    continue
+                    logger.error(f"CoinGecko REST failed: {e}")
+
+            # Give up if all sources failed
+            if not btc_price or btc_price <= 0:
+                logger.warning("BTC price unavailable from all sources, skipping cycle")
+                time.sleep(interval)
+                continue
             
             # Get token prices
             up_price, down_price = get_token_prices(market)
@@ -1071,8 +1095,8 @@ if __name__ == "__main__":
         help="Polling interval in seconds"
     )
     parser.add_argument(
-        '--dry-run', action='store_true', default=True,
-        help="Don't execute trades (default: True)"
+        '--dry-run', action='store_true', default=False,
+        help="Enable dry-run (no real orders). Default: trades are simulated."
     )
     parser.add_argument(
         '--log-dir', type=str, default="data/observations",
