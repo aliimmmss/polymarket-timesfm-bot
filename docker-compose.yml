@@ -1,4 +1,4 @@
-# Polymarket TimesFM Bot - Docker Compose
+# Polymarket Trading Bot - Docker Compose
 # Production deployment configuration
 
 version: '3.8'

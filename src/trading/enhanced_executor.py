@@ -28,8 +28,7 @@ from utils.circuit_breaker import (
 from utils.db_persistence import (
     TradingDatabase,
     TradeRecord,
-    PositionRecord,
-    ForecastRecord
+    PositionRecord
 )
 
 # Import base executor
@@ -89,7 +88,7 @@ class EnhancedOrderExecutor:
         size_usdc: float,
         signal: str,
         confidence: float,
-        timesfm_up_prob: float,
+        signal_strength: float,
         polymarket_up_price: float,
         market_slug: str = "",
         market_id: str = "",
@@ -103,7 +102,7 @@ class EnhancedOrderExecutor:
             size_usdc: USDC amount
             signal: Signal type ('BUY_UP', 'BUY_DOWN', etc.)
             confidence: Signal confidence (0-1)
-            timesfm_up_prob: TimesFM predicted probability
+            signal_strength: Signal strength probability
             polymarket_up_price: Current market price
             market_slug: Market slug for logging
             market_id: Market ID for logging
@@ -126,9 +125,8 @@ class EnhancedOrderExecutor:
             market_id=market_id or market_slug,
             signal=signal,
             confidence=confidence,
-            timesfm_up_prob=timesfm_up_prob,
+            signal_strength=signal_strength,
             polymarket_up_price=polymarket_up_price,
-            disagreement=abs(timesfm_up_prob - polymarket_up_price),
         )
         
         # Step 3: Execute order
@@ -162,7 +160,7 @@ class EnhancedOrderExecutor:
                     size_usdc=size_usdc,
                     signal=signal,
                     confidence=confidence,
-                    timesfm_up_prob=timesfm_up_prob,
+                    signal_strength=signal_strength,
                     polymarket_up_price=polymarket_up_price,
                     market_slug=market_slug,
                     market_id=market_id,
@@ -211,7 +209,7 @@ class EnhancedOrderExecutor:
         size_usdc: float,
         signal: str,
         confidence: float,
-        timesfm_up_prob: float,
+        signal_strength: float,
         polymarket_up_price: float,
         market_slug: str,
         market_id: str,
@@ -232,7 +230,7 @@ class EnhancedOrderExecutor:
             size_tokens=size_tokens,
             signal=signal,
             confidence=confidence,
-            timesfm_up_prob=timesfm_up_prob,
+            signal_strength=signal_strength,
             polymarket_up_price=polymarket_up_price,
             pnl=pnl,
             status='FILLED' if not self.dry_run else 'DRY_RUN',
@@ -356,7 +354,7 @@ def execute_trade_with_safety(
     price: float,
     size_usdc: float,
     confidence: float,
-    timesfm_up_prob: float,
+    signal_strength: float,
     polymarket_up_price: float,
     **kwargs
 ) -> Dict:
@@ -377,7 +375,7 @@ def execute_trade_with_safety(
         size_usdc=size_usdc,
         signal=signal,
         confidence=confidence,
-        timesfm_up_prob=timesfm_up_prob,
+        signal_strength=signal_strength,
         polymarket_up_price=polymarket_up_price,
         **kwargs
     )
@@ -403,7 +401,7 @@ if __name__ == "__main__":
         size_usdc=5.0,
         signal="BUY_UP",
         confidence=0.8,
-        timesfm_up_prob=0.75,
+        signal_strength=0.75,
         polymarket_up_price=0.55,
         market_slug="btc-updown-15m-test",
     )

@@ -1,4 +1,4 @@
-# Polymarket TimesFM Bot - Local Development & Testing
+# Polymarket Trading Bot - Local Development & Testing
 # Run these commands locally for CI/CD without GitHub Actions
 
 .PHONY: all help install test test-cov lint format check clean run-paper build push
@@ -7,7 +7,7 @@
 all: check
 
 help: ## Show this help
-	@echo "Polymarket TimesFM Bot - Available Commands:"
+	@echo "Polymarket Trading Bot - Available Commands:"
 	@echo ""
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo ""
@@ -58,10 +58,10 @@ check: format-check lint type-check ## Run all checks (format, lint, types)
 
 # Running the bot
 run-paper: ## Run one paper trade
-	python scripts/run_paper_trading.py --single
+	python scripts/btc_15m_monitor_v2.py --dry-run --duration 300
 
 run-monitor: ## Run continuous monitoring (paper trading)
-	python scripts/run_paper_trading.py --monitor --interval 300
+	python scripts/btc_15m_monitor_v2.py --monitor --interval 300
 
 run-dashboard: ## Start metrics dashboard
 	@echo "Metrics available at http://localhost:8080/metrics"
@@ -125,4 +125,4 @@ ci: clean check test-cov ## Full CI pipeline (runs all checks and tests)
 # Benchmark
 benchmark: ## Run performance benchmarks (optional)
 	@echo "Running benchmarks..."
-	python scripts/benchmark_forecast.py
+	python scripts/

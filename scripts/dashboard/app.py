@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flask web dashboard for Polymarket TimesFM Bot monitoring.
+"""Flask web dashboard for Polymarket Trading Bot monitoring.
 
 Access: http://localhost:5000
 """

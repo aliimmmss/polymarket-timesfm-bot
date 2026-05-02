@@ -152,7 +152,7 @@ class MetricsCollector:
         # Forecast metrics
         self.forecast_latency = Histogram(
             'polymarket_forecast_latency_seconds',
-            'TimesFM forecast generation time',
+            'Signal generation time',
             buckets=[1.0, 2.5, 5.0, 10.0, 30.0, 60.0]
         )
         

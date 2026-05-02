@@ -1,6 +1,5 @@
 # Production Readiness Checklist
 
-Polymarket TimesFM Bot - Pre-Launch Validation
 
 ---
 
@@ -24,7 +23,6 @@ Polymarket TimesFM Bot - Pre-Launch Validation
 
 | Item | Status | Notes |
 |------|--------|-------|
-| TimesFM model loading | ✅ | Singleton pattern, NaN handling |
 | BTC price fetching | ✅ | CoinGecko API integration |
 | Polymarket API | ✅ | Gamma + CLOB endpoints |
 | Signal generation | ✅ | Comparison logic complete |

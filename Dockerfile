@@ -1,4 +1,4 @@
-# Polymarket TimesFM Bot
+# Polymarket Trading Bot
 # Production Docker image
 
 FROM python:3.11-slim as base
@@ -54,7 +54,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 EXPOSE 8080
 
 # Default command - paper trading
-CMD ["python", "scripts/run_paper_trading.py", "--monitor", "--interval", "300"]
+CMD ["python", "scripts/btc_15m_monitor_v2.py", "--monitor", "--interval", "300"]
 
 # Development stage
 FROM base as development

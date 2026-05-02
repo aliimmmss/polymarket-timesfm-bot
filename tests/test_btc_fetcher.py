@@ -161,7 +161,7 @@ class TestBTCPriceFetcher:
             assert prices1 == prices2
     
     def test_data_formatting(self):
-        """Test price data formatting for TimesFM."""
+        """Test price data formatting for BTC fetcher."""
         from src.data_collection.btc_price_fetcher import BTCPriceFetcher
         
         fetcher = BTCPriceFetcher()

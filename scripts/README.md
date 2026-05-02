@@ -72,6 +72,6 @@ python scripts/btc_15m_monitor.py --output ~/custom/path
 
 - [ ] Automated trade execution
 - [ ] Multiple market tracking
-- [ ] TimesFM forecasting integration
+- [ ] signal generation forecasting integration
 - [ ] Risk management integration
 - [ ] Performance analytics

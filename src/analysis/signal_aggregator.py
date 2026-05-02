@@ -5,8 +5,7 @@ Signal Sources:
 1. TPD (Token Price Disagreement) — how mispriced is the market vs BTC reality
 2. CVD (Cumulative Volume Delta) — buying/selling pressure from Binance trades
 3. OBI (Order Book Imbalance) — orderbook bid/ask pressure (-1 to +1)
-4. TimesFM — 24-72hr BTC momentum forecast (updated hourly)
-5. Time Decay — optimal trading window factor (peaks at 7.5 min remaining)
+4. Time Decay — optimal trading window factor (peaks at 7.5 min remaining)
 """
 
 import math
@@ -33,7 +32,7 @@ class AggregatedSignal:
     """The final unified trading decision."""
     signal: str            # "BUY_UP", "BUY_DOWN", or "HOLD"
     confidence: float      # 0.0 to 1.0
-    agreement_count: int   # How many of 5 signals agree
+    agreement_count: int   # How many of 4 signals agree
     components: dict       # name -> SignalComponent
     reasoning: str         # Human-readable explanation
 
@@ -43,28 +42,17 @@ class SignalAggregator:
         """
         Args:
             config: dict with 'weights' and 'thresholds'
-                    weights: {'tpd': 0.30, 'cvd': 0.25, 'obi': 0.15, 'timesfm': 0.20, 'time_decay': 0.10}
+                    weights: {'tpd': 0.35, 'cvd': 0.30, 'obi': 0.20, 'time_decay': 0.15}
                     thresholds: {'buy_up': 0.65, 'buy_down': 0.65, 'min_signals': 3}
         """
         if config is None:
             config = {}
         self.weights = config.get('weights', {
-            'tpd': 0.30, 'cvd': 0.25, 'obi': 0.15,
-            'timesfm': 0.20, 'time_decay': 0.10
+            'tpd': 0.35, 'cvd': 0.30, 'obi': 0.20, 'time_decay': 0.15
         })
         self.thresholds = config.get('thresholds', {
             'buy_up': 0.65, 'buy_down': 0.65, 'min_signals': 3
         })
-        self.timesfm_signal = None  # Updated hourly
-        self.timesfm_updated = 0
-
-    def update_timesfm(self, signal: dict):
-        """
-        Called once per hour with TimesFM forecast result.
-        signal = {'direction': 'UP'|'DOWN', 'confidence': 0.0-1.0, 'up_prob': 0.0-1.0}
-        """
-        self.timesfm_signal = signal
-        self.timesfm_updated = time.time()
 
     def evaluate(self, market_state: dict) -> AggregatedSignal:
         """
@@ -108,11 +96,7 @@ class SignalAggregator:
         obi_comp = self._score_obi(market_state.get('obi', 0.0))
         components.append(obi_comp)
 
-        # 4. TimesFM momentum - longer-term trend confirmation, updated hourly
-        timesfm_comp = self._score_timesfm()
-        components.append(timesfm_comp)
-
-        # 5. Time decay factor - optimal trading window scoring
+        # 4. Time decay factor - optimal trading window scoring
         time_decay_comp = self._score_time_decay(
             market_state.get('time_remaining', 900),
             market_state.get('window_duration', 900)
@@ -262,52 +246,6 @@ class SignalAggregator:
             weight=self.weights['obi']
         )
 
-    def _score_timesfm(self) -> SignalComponent:
-        """
-        TimesFM momentum scoring.
-
-        - If no TimesFM signal: return NEUTRAL, score=0.5
-        - score = timesfm_confidence if direction is "UP", else 1 - confidence
-        - direction from cached timesfm_signal
-        """
-        # Check for available TimesFM data
-        if self.timesfm_signal is None or \
-           (abs(time.time() - self.timesfm_updated) > 3600 and not self._has_recent_timesfm()):
-            return SignalComponent(
-                name="timesfm",
-                score=0.5,      # Neutral when no data
-                direction="NEUTRAL",
-                weight=self.weights['timesfm']
-            )
-
-        signal = self.timesfm_signal
-
-        if signal.get('direction') == 'UP':
-            score = signal.get('confidence', 0.5)
-            reason = f"TimesFM forecasts UP with {signal.get('up_prob', 0):.1%} probability ({score:.3f})"
-        elif signal.get('direction') == 'DOWN':
-            # Invert confidence for bearish signals
-            score = 1 - (signal.get('confidence', 0.5))
-            reason = f"TimesFM forecasts DOWN with {signal.get('down_prob', 1-signal.get('up_prob', 0)): .1%} probability ({score:.3f})"
-        else:
-            # Unknown direction, treat as neutral
-            score = signal.get('confidence', 0.5) if 'confidence' in signal else 0.5
-            reason = f"TimesFM data available but unclear direction (defaulting to {signal})"
-
-        logger.debug(f"TimesFM: dir={signal.get('direction', 'unknown')}, conf={score:.3f}")
-
-        return SignalComponent(
-            name="timesfm",
-            score=round(score, 4),
-            direction=signal.get('direction', 'NEUTRAL'),
-            weight=self.weights['timesfm']
-        )
-
-    def _has_recent_timesfm(self) -> bool:
-        """Check if TimesFM signal is recent (within last hour)."""
-        return abs(time.time() - self.timesfm_updated) < 3600 or \
-               (self.timesfm_signal and 'direction' in str(self.timesfm_signal))
-
     def _score_time_decay(self, time_remaining: int, window_duration: int = 900) -> SignalComponent:
         """
         Time decay factor.
@@ -365,8 +303,8 @@ class SignalAggregator:
            - If direction is DOWN and weighted_score >= buy_down threshold: "BUY_DOWN"
            - Otherwise: "HOLD"
         5. Build reasoning string, e.g.:
-           "BUY_UP: TPD(bullish,0.85) + CVD(bullish,0.72) + TimesFM(bullish,0.72) agree.
-            Gap=$33 but Up only $0.62. Strong buying pressure confirms."
+          "BUY_UP: TPD(bullish,0.85) + CVD(bullish,0.72) + OBI(bullish,0.65) agree.
+           Gap=$33 but Up only $0.62. Strong buying pressure confirms."
         """
         # Initialize counters - these count how many signals say UP vs DOWN
         up_count = 0

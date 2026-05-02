@@ -1,11 +1,11 @@
 """Database persistence layer for trading data.
 
-Stores trade history, forecasts, positions, and performance metrics.
+Stores trade history, positions, and performance metrics.
 Supports SQLite (default) and PostgreSQL (production).
 
 Required tables:
 - trades: Executed trades
-- forecasts: TimesFM predictions
+- signals: Generated trading signals
 - positions: Current token holdings
 - orders: Order history
 - performance: Daily P&L tracking
@@ -37,7 +37,7 @@ class TradeRecord:
     size_tokens: float
     signal: str  # 'BUY_UP', 'BUY_DOWN', 'HOLD'
     confidence: float
-    timesfm_up_prob: float
+    signal_strength: float
     polymarket_up_price: float
     pnl: Optional[float]
     status: str  # 'PENDING', 'FILLED', 'PARTIAL', 'FAILED'
@@ -45,15 +45,6 @@ class TradeRecord:
     dry_run: bool
 
 
-@dataclass
-class ForecastRecord:
-    """Record of a TimesFM forecast."""
-    id: Optional[int]
-    timestamp: datetime
-    btc_price: float
-    forecast_values: List[float]
-    up_probability: float
-    horizon: int
 
 
 @dataclass
@@ -106,24 +97,12 @@ class TradingDatabase:
                     size_tokens REAL NOT NULL,
                     signal TEXT,
                     confidence REAL,
-                    timesfm_up_prob REAL,
+                    signal_strength REAL,
                     polymarket_up_price REAL,
                     pnl REAL,
                     status TEXT DEFAULT 'PENDING',
                     order_id TEXT,
                     dry_run BOOLEAN DEFAULT TRUE
-                )
-            """)
-            
-            # Forecasts table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS forecasts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    btc_price REAL NOT NULL,
-                    forecast_values TEXT,  -- JSON array
-                    up_probability REAL NOT NULL,
-                    horizon INTEGER DEFAULT 15
                 )
             """)
             
@@ -165,10 +144,8 @@ class TradingDatabase:
                     market_id TEXT NOT NULL,
                     signal TEXT NOT NULL,
                     confidence REAL,
-                    timesfm_up_prob REAL,
-                    polymarket_up_price REAL,
-                    disagreement REAL,
-                    executed BOOLEAN DEFAULT FALSE
+                    signal_strength REAL,
+                    polymarket_up_price REAL,                    executed BOOLEAN DEFAULT FALSE
                 )
             """)
             
@@ -191,7 +168,7 @@ class TradingDatabase:
                 INSERT INTO trades (
                     timestamp, market_id, market_slug, token_id, side,
                     price, size_usdc, size_tokens, signal, confidence,
-                    timesfm_up_prob, polymarket_up_price, pnl, status,
+                    signal_strength, polymarket_up_price, pnl, status,
                     order_id, dry_run
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
@@ -205,7 +182,7 @@ class TradingDatabase:
                 trade.size_tokens,
                 trade.signal,
                 trade.confidence,
-                trade.timesfm_up_prob,
+                trade.signal_strength,
                 trade.polymarket_up_price,
                 trade.pnl,
                 trade.status,
@@ -405,16 +382,16 @@ class TradingDatabase:
             }
     
     def save_signal(self, market_id: str, signal: str, confidence: float,
-                   timesfm_up_prob: float, polymarket_up_price: float,
+                   signal_strength: float, polymarket_up_price: float,
                    disagreement: float) -> int:
         """Save generated signal."""
         with self._get_connection() as conn:
             cursor = conn.execute(
                 """INSERT INTO signals (timestamp, market_id, signal, confidence,
-                                     timesfm_up_prob, polymarket_up_price, disagreement)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                                     signal_strength, polymarket_up_price)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (datetime.now().isoformat(), market_id, signal, confidence,
-                 timesfm_up_prob, polymarket_up_price, disagreement)
+                 signal_strength, polymarket_up_price)
             )
             conn.commit()
             return cursor.lastrowid
@@ -441,7 +418,7 @@ if __name__ == "__main__":
         size_tokens=9.09,
         signal="BUY_UP",
         confidence=0.8,
-        timesfm_up_prob=0.75,
+        signal_strength=0.75,
         polymarket_up_price=0.55,
         pnl=0.5,
         status="FILLED",

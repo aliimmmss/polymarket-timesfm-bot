@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enhanced Flask dashboard for Polymarket TimesFM Bot.
+"""Enhanced Flask dashboard for Polymarket Trading Bot.
 
 Features:
 - Chart.js visualizations (P&L, BTC price)

@@ -1,1 +1,1 @@
-"""Test suite for Polymarket TimesFM Bot."""
+"""Test suite for Polymarket Trading Bot."""

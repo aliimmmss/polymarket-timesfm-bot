@@ -8,7 +8,6 @@ from pathlib import Path
 src_dir = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_dir))
 
-
 @pytest.fixture
 def sample_btc_prices():
     """Sample BTC price data for testing."""
@@ -17,18 +16,6 @@ def sample_btc_prices():
         65800.0, 65400.0, 65600.0, 65900.0, 66000.0,
         65700.0, 66100.0, 66300.0, 66000.0, 66400.0,
     ]
-
-
-@pytest.fixture
-def sample_forecast_result():
-    """Sample TimesFM forecast result."""
-    return {
-        'point_forecast': [66200.0, 66500.0, 66800.0, 67000.0, 67200.0],
-        'quantile_forecast': [],
-        'has_nan': False,
-        'error': None,
-    }
-
 
 @pytest.fixture
 def sample_market_data():
@@ -42,7 +29,6 @@ def sample_market_data():
         'active': True,
         'closed': False,
     }
-
 
 @pytest.fixture
 def test_config():

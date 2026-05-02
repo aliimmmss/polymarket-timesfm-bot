@@ -1,6 +1,6 @@
 # Polymarket Bot Dashboard
 
-Web dashboard for monitoring the Polymarket TimesFM trading bot.
+Web dashboard for monitoring the Polymarket signal generation trading bot.
 
 ## Quick Start
 

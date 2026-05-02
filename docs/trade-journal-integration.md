@@ -65,4 +65,3 @@ Hermes will:
 
 ---
 
-*Part of the Polymarket TimesFM Bot — now powered by Hermes disciplined trading skills.*

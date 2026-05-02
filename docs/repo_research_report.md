@@ -1,7 +1,6 @@
 # Polymarket Bot Repository Research Report
 
 **Date:** 2026-04-04  
-**Purpose:** Research-only analysis of 3 GitHub repositories for strategy integration into polymarket-timesfm-bot  
 **Status:** RESEARCH ONLY - No code modifications made
 
 ---
@@ -98,7 +97,6 @@ This report analyzes three GitHub repositories to extract techniques for improvi
 
 **What Needs Adaptation:**
 - Add support for 15-minute specific timeframe
-- Integrate with our TimesFM momentum scoring
 - Remove multi-coin complexity (we only need BTC)
 
 ---
@@ -143,7 +141,6 @@ This report analyzes three GitHub repositories to extract techniques for improvi
 **What Needs Adaptation:**
 - Split into modules
 - Fix PTB caching bug
-- Integrate our TimesFM scoring
 - Add our Strategy 1/3 conditions
 
 ---
@@ -961,7 +958,6 @@ Optional:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    POLYMARKET-TIMESFM-BOT                       │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐         │
@@ -983,7 +979,6 @@ Optional:
 │  │                 INDICATOR LAYER                      │       │
 │  │  - CVD (1m, 3m, 5m)                                 │       │
 │  │  - OBI                                              │       │
-│  │  - TimesFM momentum/volatility                      │       │
 │  │  - Implied belief volatility                        │       │
 │  │  - Price gap (BTC - PTB)                            │       │
 │  └─────────────────────────────────────────────────────┘       │
@@ -1536,7 +1531,6 @@ def logit_gamma(p: np.ndarray) -> np.ndarray:
    - We still use REST polling
    - Priority upgrade needed
 
-3. **TimesFM Integration:**
    - Neither repo has ML-based forecasting
    - Our unique advantage
    - Need to combine with CVD/OBI
@@ -1577,7 +1571,6 @@ The three repositories provide complementary value:
    - Implement auto-redeem
    - Add paper trading mode
 
-**Critical Insight:** The Chinese bot proves that BTC 15-minute trading is viable. Our differentiator is TimesFM momentum scoring combined with better signal aggregation from CVD/OBI data.
 
 ---
 
