@@ -18,6 +18,13 @@ from src.forecasting.forecaster import TimesFMForecaster
 from src.forecasting.signal_generator import BTCSignalGenerator
 from src.trading.order_executor import OrderExecutor, Order
 
+# Trade journal integration
+try:
+    from src.trading.trade_journal import TradeJournal
+    HAS_TRADE_JOURNAL = True
+except ImportError:
+    HAS_TRADE_JOURNAL = False
+
 
 def setup_logging(paper_trading: bool = True):
     os.makedirs('data/logs', exist_ok=True)
@@ -54,6 +61,15 @@ class PaperTradingPipeline:
             max_order_size=max_order_size,
             daily_loss_limit=daily_loss_limit,
         )
+        
+        # Initialize trade journal
+        self.trade_journal = None
+        if HAS_TRADE_JOURNAL:
+            try:
+                self.trade_journal = TradeJournal()
+                logger.info("Trade journal initialized")
+            except Exception as e:
+                logger.warning(f"Failed to init trade journal: {e}")
         
         self.trade_history = []
         self.paper_balance = {'USDC': 1000.0, 'positions': {}}
@@ -156,6 +172,25 @@ class PaperTradingPipeline:
             
         trade_record['paper_balance_after'] = self.paper_balance['USDC']
         self.trade_history.append(trade_record)
+        
+        # Also log to trade journal
+        if self.trade_journal:
+            try:
+                journal_entry = {
+                    "date": trade_record.get("timestamp"),
+                    "market": trade_record.get("market_slug", trade_record.get("market_id", "Unknown")),
+                    "position": "YES" if trade_record.get('side') == 'BUY_UP' else "NO",
+                    "entry_price": trade_record.get("polymarket_up_price") if trade_record.get('side') == 'BUY_UP' else 1 - trade_record.get("polymarket_up_price"),
+                    "size_usdc": 5.0,  # hardcoded in script
+                    "thesis": f"TimesFM UP prob={trade_record.get('timesfm_up_prob', 0):.2%}, Market={trade_record.get('polymarket_up_price', 0):.2%}, Gap={trade_record.get('disagreement', 0):.2%}",
+                    "confidence": trade_record.get("confidence", 0.0),
+                    "strategy": "timesfm_btc_15min",
+                    "time_horizon": "15 minutes",
+                    "outcome": "filled" if trade_record.get("executed") else "skipped",
+                }
+                self.trade_journal.log_entry(journal_entry)
+            except Exception as e:
+                logger.error(f"Trade journal logging failed: {e}")
         
         return trade_record
         

@@ -61,6 +61,12 @@ try:
 except ImportError:
     HAS_STOP_LOSS = False
 
+try:
+    from src.trading.trade_journal import TradeJournal
+    HAS_TRADE_JOURNAL = True
+except ImportError:
+    HAS_TRADE_JOURNAL = False
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -556,6 +562,15 @@ def run_monitor(
     # Initialize components
     csv_logger = ObservationLogger(log_dir)
     
+    # Initialize trade journal if available
+    trade_journal = None
+    if HAS_TRADE_JOURNAL:
+        try:
+            trade_journal = TradeJournal()
+            logger.info("Trade journal initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize trade journal: {e}")
+    
     # WebSocket for BTC data
     ws = None
     if HAS_WEBSOCKET:
@@ -724,6 +739,36 @@ def run_monitor(
                     size_usdc=MAX_ORDER_SIZE,
                 )
                 logger.info(f"Order result: {result}")
+                
+                # Log trade to journal
+                if trade_journal:
+                    try:
+                        # Build thesis from signals
+                        sig_parts = []
+                        if signal_a: sig_parts.append('A')
+                        if signal_b: sig_parts.append('B')
+                        if signal_c: sig_parts.append('C')
+                        signal_type = '+'.join(sig_parts) if sig_parts else 'NONE'
+                        thesis = f"BTC 15min Signal(s) [{signal_type}]: gap=${gap:.2f}, CVD1m=${cvd_1m:+,.0f}, OBI={obi:+.2f}, Score={trend_score:.0f}"
+                        strategy = f"btc_15min_{signal_type.lower()}"
+                        # size_pct will be computed from config capital inside journal
+                        trade_record = {
+                            "date": datetime.now().isoformat(),
+                            "market": market.question,
+                            "position": "YES",
+                            "entry_price": up_price,
+                            "size_usdc": MAX_ORDER_SIZE,
+                            "thesis": thesis,
+                            "time_horizon": "15 minutes",
+                            "confidence": 0.7,  # TODO: derive from gap
+                            "strategy": strategy,
+                            "outcome": "filled" if result.get('success') else "skipped",
+                            "order_id": result.get('order_id'),
+                        }
+                        trade_journal.log_entry(trade_record)
+                        logger.info("Trade logged to journal")
+                    except Exception as e:
+                        logger.error(f"Failed to log trade: {e}")
             
             time.sleep(interval)
     
