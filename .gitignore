@@ -66,3 +66,4 @@ research_repos/
 # State files
 state.json
 *.state
+data/trading.db
