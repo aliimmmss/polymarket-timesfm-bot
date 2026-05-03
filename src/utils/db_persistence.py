@@ -423,7 +423,7 @@ class TradingDatabase:
         try:
             with self._get_connection() as conn:
                 cursor = conn.execute("""
-                    SELECT id, market_slug, signal, entry_price, confidence
+                    SELECT id, market_slug, signal, price AS entry_price, confidence
                     FROM trades
                     WHERE outcome IS NULL
                       AND status IN ('FILLED', 'PARTIAL')

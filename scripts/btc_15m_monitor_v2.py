@@ -36,6 +36,7 @@ os.environ.setdefault('no_proxy', '*')
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import threading
 import requests
 
 # Try imports with graceful fallback
@@ -698,6 +699,20 @@ def run_monitor(
         logger.info("Stop-loss manager rehydrated from saved positions")
     
     # Market tracking
+    # Start outcome evaluator thread (runs in background, resolves closed markets)
+    if HAS_OUTCOME_EVAL:
+        try:
+            evaluator = OutcomeEvaluator(poll_interval=30)
+            evaluator_thread = threading.Thread(
+                target=evaluator.poll_forever,
+                daemon=True,
+                name="OutcomeEvaluator"
+            )
+            evaluator_thread.start()
+            logger.info("OutcomeEvaluator thread started (polls Gamma every 30s)")
+        except Exception as e:
+            logger.error(f"Failed to start OutcomeEvaluator: {e}")
+
     current_market = None
     cached_ptb = None
     btc_price_cache = {'price': None, 'timestamp': 0}  # Cache to avoid rate limits (30s TTL)
@@ -1160,8 +1175,46 @@ if __name__ == "__main__":
         help="Directory for CSV logs"
     )
     
+    parser.add_argument(
+        '--config', type=str, default=None,
+        help='Path to strategy config YAML (overrides thresholds)'
+    )
+
     args = parser.parse_args()
     
+    # Load strategy config overrides if provided
+    if args.config:
+        import yaml
+        with open(args.config) as f:
+            cfg = yaml.safe_load(f) or {}
+        # Override global threshold constants
+        
+        if 'signal_a_gap' in cfg:
+            SIGNAL_A_GAP = cfg['signal_a_gap']
+        if 'signal_a_max_price' in cfg:
+            SIGNAL_A_MAX_PRICE = cfg['signal_a_max_price']
+        if 'signal_a_min_time' in cfg:
+            SIGNAL_A_MIN_TIME = cfg['signal_a_min_time']
+        if 'signal_b_gap' in cfg:
+            SIGNAL_B_GAP = cfg['signal_b_gap']
+        if 'signal_b_max_price' in cfg:
+            SIGNAL_B_MAX_PRICE = cfg['signal_b_max_price']
+        if 'signal_b_max_time' in cfg:
+            SIGNAL_B_MAX_TIME = cfg['signal_b_max_time']
+        if 'signal_c_cvd' in cfg:
+            SIGNAL_C_CVD = cfg['signal_c_cvd']
+        if 'signal_c_obi' in cfg:
+            SIGNAL_C_OBI = cfg['signal_c_obi']
+        if 'signal_c_max_price' in cfg:
+            SIGNAL_C_MAX_PRICE = cfg['signal_c_max_price']
+        if 'max_order_size' in cfg:
+            MAX_ORDER_SIZE = cfg['max_order_size']
+        if 'max_positions' in cfg:
+            MAX_POSITIONS = cfg['max_positions']
+        
+        logger.info(f"Strategy config loaded from {args.config}")
+        logger.info(f"  Signal A gap={SIGNAL_A_GAP}, B gap={SIGNAL_B_GAP}, C cvd={SIGNAL_C_CVD}, obi={SIGNAL_C_OBI}")
+
     run_monitor(
         duration=args.duration,
         interval=args.interval,
