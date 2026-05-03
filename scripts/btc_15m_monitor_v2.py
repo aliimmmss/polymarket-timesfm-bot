@@ -635,6 +635,7 @@ def run_monitor(
     interval: float = 5.0,
     dry_run: bool = True,
     log_dir: str = "data/observations",
+    config_override: Optional[dict] = None,
 ):
     """Run the V2 monitor.
     
@@ -654,8 +655,14 @@ def run_monitor(
     trade_journal = None
     if HAS_TRADE_JOURNAL:
         try:
-            trade_journal = TradeJournal()
+            # Support custom log path from config_override
+            log_path_override = None
+            if config_override and 'trading_log_path' in config_override:
+                log_path_override = config_override['trading_log_path']
+            trade_journal = TradeJournal(log_path=log_path_override)
             logger.info("Trade journal initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize trade journal: {e}")
         except Exception as e:
             logger.warning(f"Failed to initialize trade journal: {e}")
     
@@ -1220,4 +1227,5 @@ if __name__ == "__main__":
         interval=args.interval,
         dry_run=args.dry_run,
         log_dir=args.log_dir,
+        config_override=cfg if 'cfg' in locals() else None,
     )
