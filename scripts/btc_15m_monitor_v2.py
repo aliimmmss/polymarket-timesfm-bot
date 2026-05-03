@@ -20,6 +20,8 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import requests, json, time
+from datetime import datetime, timezone
 
 # FIX: Force certifi CA bundle for SSL in WSL environments with broken system CAs
 try:
@@ -32,6 +34,13 @@ except ImportError:
 # FIX: Bypass any system/ corporate proxy that intercepts HTTPS
 os.environ.setdefault('NO_PROXY', '*')
 os.environ.setdefault('no_proxy', '*')
+
+# FIX: Suppress InsecureRequestWarning when using verify=False (CoinGecko fallback)
+try:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -46,6 +55,13 @@ try:
 except ImportError:
     HAS_WEBSOCKET = False
     print("Warning: websocket-client not installed, will use REST polling")
+
+try:
+    from src.data_collection.ccxt_btc import get_btc_price as ccxt_get_btc_price
+    HAS_CCXT = True
+except ImportError:
+    HAS_CCXT = False
+    print("Warning: ccxt not installed, falling back to CoinGecko/Binance")
 
 try:
     from src.analysis.indicators import TrendScorer
@@ -78,6 +94,13 @@ try:
 except ImportError:
     HAS_OUTCOME_EVAL = False
 
+# DB persistence for outcome evaluation (dry-run trades need outcome labels)
+try:
+    from src.utils.db_persistence import TradingDatabase, TradeRecord
+    HAS_DB = True
+except ImportError:
+    HAS_DB = False
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -93,6 +116,9 @@ logger = logging.getLogger(__name__)
 
 GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API = "https://clob.polymarket.com"
+
+# Global BTC price cache for momentum calculation (last 10 prices)
+_btc_price_cache: List[float] = []
 CRYPTO_PRICE_API = "https://polymarket.com/api/crypto/crypto-price"
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 
@@ -362,40 +388,102 @@ def find_active_market() -> Optional[Market]:
     return None
 
 
-def get_token_prices(market: Market) -> Tuple[float, float]:
-    """Get Up and Down token prices from CLOB API.
 
-    Args:
-        market: Market object
-
-    Returns:
-        Tuple of (up_price, down_price)
+def fetch_clob_orderbook(market: Market) -> Optional[Dict]:
     """
+    Fetch orderbook from Polymarket CLOB to compute OBI.
+    Returns orderbook JSON or None on failure.
+    """
+    try:
+        url = f"{CLOB_API}/book?token_id={market.up_token_id}"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        logger.debug(f"Orderbook fetch error: {e}")
+    return None
+
+
+def compute_obi_from_orderbook(orderbook: Dict) -> float:
+    """Compute Order Book Imbalance (OBI) from CLOB orderbook."""
+    bids = orderbook.get('bids', [])
+    asks = orderbook.get('asks', [])
+    if not bids or not asks:
+        return 0.0
+    # Handle both list-of-arrays and list-of-dicts formats
+    total_bids = 0.0
+    for b in bids[:20]:
+        if isinstance(b, dict):
+            total_bids += float(b.get('size', 0))
+        else:  # assume [price, size]
+            total_bids += float(b[1])
+    total_asks = 0.0
+    for a in asks[:20]:
+        if isinstance(a, dict):
+            total_asks += float(a.get('size', 0))
+        else:
+            total_asks += float(a[1])
+    denom = total_bids + total_asks
+    if denom == 0:
+        return 0.0
+    return (total_bids - total_asks) / denom
+
+
+def compute_momentum_proxy(btc_prices_history: list) -> float:
+    """
+    Compute momentum proxy for CVD.
+    Returns price change since earliest cached point.
+    Works with as few as 2 points (adaptive window).
+    """
+    if len(btc_prices_history) < 2:
+        return 0.0
+    old_price = btc_prices_history[0]
+    if old_price <= 0:
+        return 0.0
+    return btc_prices_history[-1] - old_price
+
+
+# Rolling BTC price history for momentum (keep last 10 points)
+_btc_price_history = []
+
+def get_token_prices(market: Market) -> Tuple[float, float]:
+    """Get Up and Down token prices from CLOB API."""
+    logger.debug(f"[PERF] get_token_prices START for {market.slug}")
     up_price = 0.5
     down_price = 0.5
 
-    # Helper to fetch with SSL fallback
-    def fetch_midpoint(token_id: str) -> Optional[float]:
+    def fetch_midpoint(token_id: str, label: str) -> Optional[float]:
+        logger.debug(f"[PERF] fetch_midpoint START {label}")
         for verify in [True, False]:
             try:
                 resp = requests.get(
                     f"{CLOB_API}/midpoint",
                     params={'token_id': token_id},
-                    timeout=5,
+                    timeout=2,  # Reduced from 5s to avoid hanging
                     verify=verify
                 )
                 if resp.status_code == 200:
                     mid = resp.json().get('mid')
                     if mid is not None:
+                        logger.debug(f"[PERF] fetch_midpoint SUCCESS {label}: {mid}")
                         return float(mid)
             except Exception as e:
                 logger.debug(f"Midpoint fetch fail (verify={verify}): {e}")
                 if not verify:
                     break
+        logger.debug(f"[PERF] fetch_midpoint FAIL {label}")
         return None
 
-    up_mid = fetch_midpoint(market.up_token_id)
-    down_mid = fetch_midpoint(market.down_token_id)
+    up_mid = fetch_midpoint(market.up_token_id, "UP")
+    down_mid = fetch_midpoint(market.down_token_id, "DOWN")
+
+    if up_mid is not None:
+        up_price = up_mid
+    if down_mid is not None:
+        down_price = down_mid
+
+    logger.debug(f"[PERF] get_token_prices END: up={up_price}, down={down_price}")
+    return up_price, down_price
 
     if up_mid is not None:
         up_price = up_mid
@@ -482,7 +570,7 @@ def check_signals(
     )
     
     signal_c = (
-        abs(cvd_5m) >= SIGNAL_C_CVD and
+        abs(cvd_5m) >= SIGNAL_C_CVD and   # momentum magnitude
         obi >= SIGNAL_C_OBI and
         up_price < SIGNAL_C_MAX_PRICE and
         time_remaining > SIGNAL_A_MIN_TIME
@@ -666,6 +754,14 @@ def run_monitor(
         except Exception as e:
             logger.warning(f"Failed to initialize trade journal: {e}")
     
+    # Initialize DB persistence for outcome evaluation
+    db = None
+    if HAS_DB:
+        try:
+            db = TradingDatabase()
+            logger.info("DB persistence initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize DB persistence: {e}")
     # WebSocket for BTC data
     ws = None
     if HAS_WEBSOCKET:
@@ -818,62 +914,93 @@ def run_monitor(
             
             # Get BTC price (WS → Binance REST → CoinGecko fallback chain, with 30s cache)
             now = time.time()
-            CACHE_TTL = 30  # seconds
+            CACHE_TTL = 300  # seconds — extended to avoid CoinGecko rate limits (5min)
             if btc_price_cache['price'] is not None and now - btc_price_cache['timestamp'] < CACHE_TTL:
                 btc_price = btc_price_cache['price']
                 logger.debug(f"BTC price from cache: ${btc_price:,.2f}")
             else:
                 btc_price = None
 
-                # 1) Try WebSocket if available
-                if ws:
-                    btc_price = ws.get_current_price()
-                    if btc_price:
-                        logger.debug(f"BTC price from WebSocket: ${btc_price:,.2f}")
-                    else:
-                        logger.warning("WebSocket price unavailable, trying REST fallback...")
-
-                # 2) Binance REST if WS failed or unavailable
-                if not btc_price:
-                    for verify in [True, False]:  # try normal first, then skip verification
+                # PILOT OVERRIDE: use CCXT for BTC price (multi-exchange fallback)
+                if USE_COINGECKO_PRIMARY:
+                    if HAS_CCXT:
                         try:
-                            resp = requests.get(
-                                "https://api.binance.com/api/v3/ticker/price",
-                                params={'symbol': 'BTCUSDT'},
-                                timeout=5,
-                                verify=verify
-                            )
-                            if resp.status_code == 200:
-                                btc_price = float(resp.json()['price'])
-                                logger.debug(f"BTC price from Binance REST (verify={verify}): ${btc_price:,.2f}")
-                                break
+                            btc_price = ccxt_get_btc_price()
+                            logger.info(f"[PILOT] BTC price from CCXT: ${btc_price:,.2f}")
                         except Exception as e:
-                            logger.warning(f"Binance REST failed (verify={verify}): {e}")
-                            if not verify:
-                                break
+                            logger.warning(f"[PILOT] CCXT failed: {e} — falling back to REST")
+                            btc_price = None
+                    else:
+                        btc_price = None
 
-                # 3) CoinGecko REST as final fallback
-                if not btc_price:
-                    for verify in [True, False]:
+                    # Fallback to REST endpoints if CCXT unavailable/failed
+                    if not btc_price:
                         try:
                             resp = requests.get(
                                 f"{COINGECKO_API}/simple/price",
                                 params={'ids': 'bitcoin', 'vs_currencies': 'usd'},
-                                timeout=5,
-                                verify=verify
+                                timeout=10,
+                                verify=False
                             )
                             if resp.status_code == 200:
                                 btc_price = float(resp.json()['bitcoin']['usd'])
-                                logger.debug(f"BTC price from CoinGecko (verify={verify}): ${btc_price:,.2f}")
-                                break
+                                logger.info(f"[PILOT] BTC price from CoinGecko REST: ${btc_price:,.2f}")
+                            elif resp.status_code == 429:
+                                logger.warning(f"[PILOT] CoinGecko rate limited (429) — backing off 60s")
+                                time.sleep(60)
+                                btc_price = None
+                                continue
+                            else:
+                                logger.warning(f"[PILOT] CoinGecko returned {resp.status_code}")
                         except Exception as e:
-                            logger.warning(f"CoinGecko REST failed (verify={verify}): {e}")
-                            if not verify:
-                                break
+                            logger.error(f"[PILOT] CoinGecko REST failed: {e}")
+                else:
+                    # 1) Try WebSocket if available
+                    if ws:
+                        btc_price = ws.get_current_price()
+                        if btc_price:
+                            logger.debug(f"BTC price from WebSocket: ${btc_price:,.2f}")
+                        else:
+                            logger.warning("WebSocket price unavailable, trying REST fallback...")
 
-                # Update cache if we got a valid price
-                if btc_price and btc_price > 0:
-                    btc_price_cache = {'price': btc_price, 'timestamp': now}
+                    # 2) Binance REST if WS failed or unavailable
+                    if not btc_price:
+                        for verify in [True, False]:
+                            try:
+                                resp = requests.get(
+                                    "https://api.binance.com/api/v3/ticker/price",
+                                    params={'symbol': 'BTCUSDT'},
+                                    timeout=5,
+                                    verify=verify
+                                )
+                                if resp.status_code == 200:
+                                    btc_price = float(resp.json()['price'])
+                                    logger.debug(f"BTC price from Binance REST (verify={verify}): ${btc_price:,.2f}")
+                                    break
+                            except Exception as e:
+                                logger.warning(f"Binance REST failed (verify={verify}): {e}")
+                                if not verify:
+                                    break
+
+                    # 3) CoinGecko REST as final fallback
+                    if not btc_price:
+                        for verify in [True, False]:
+                            try:
+                                resp = requests.get(
+                                    f"{COINGECKO_API}/simple/price",
+                                    params={'ids': 'bitcoin', 'vs_currencies': 'usd'},
+                                    timeout=5,
+                                    verify=verify
+                                )
+                                if resp.status_code == 200:
+                                    btc_price = float(resp.json()['bitcoin']['usd'])
+                                    logger.debug(f"BTC price from CoinGecko (verify={verify}): ${btc_price:,.2f}")
+                                    break
+                            except Exception as e:
+                                logger.warning(f"CoinGecko REST failed (verify={verify}): {e}")
+                                if not verify:
+                                    pass
+
 
             # Give up if all sources failed
             if not btc_price or btc_price <= 0:
@@ -882,33 +1009,30 @@ def run_monitor(
                 continue
 
             # Get token prices
+            logger.debug("[PERF] Calling get_token_prices...")
             up_price, down_price = get_token_prices(market)
+            logger.debug(f"[PERF] get_token_prices returned: up={up_price}, down={down_price}")
             
-            # Calculate indicators
-            cvd_1m = 0.0
-            cvd_5m = 0.0
+            # Calculate indicators (CLOB + momentum, no WebSocket)
+            cvd_1m = 0.0  # Not available without trade feed
+            cvd_5m = 0.0  # Will be replaced with momentum proxy
             obi = 0.0
             trend_score = 0.0
-            
-            if scorer and ws:
-                # Get trades and orderbook
-                trades = ws.get_trades(300)
-                orderbook = ws.get_orderbook()
-                
-                for t in trades[-100:]:  # Last 100 trades
-                    scorer.cvd.update(t)
-                
-                if orderbook['bids'] and orderbook['asks']:
-                    mid = (orderbook['bids'][0][0] + orderbook['asks'][0][0]) / 2
-                    obi = scorer.obi.calculate(orderbook, mid)
-                
-                cvd_vals = scorer.cvd.get_all_cvd()
-                cvd_1m = cvd_vals['cvd_1m']
-                cvd_5m = cvd_vals['cvd_5m']
-                
-                score_dict = scorer.get_score(orderbook)
-                trend_score = score_dict.get('score', 0.0)
-            
+
+            # --- OBI from CLOB orderbook ---
+            try:
+                orderbook = fetch_clob_orderbook(market)
+                if orderbook and orderbook.get('bids') and orderbook.get('asks'):
+                    obi = compute_obi_from_orderbook(orderbook)
+            except Exception as e:
+                logger.debug(f"OBI fetch error: {e}")
+
+            # --- CVD proxy: BTC momentum (price delta over ~5min) ---
+            global _btc_price_cache
+            _btc_price_cache.append(btc_price)
+            if len(_btc_price_cache) > 10:
+                _btc_price_cache.pop(0)
+            cvd_5m = compute_momentum_proxy(_btc_price_cache)
             # Calculate gap and time remaining
             gap = btc_price - ptb
             time_remaining = max(0, market.window_end - time.time())
@@ -917,6 +1041,7 @@ def run_monitor(
             signal_a, signal_b, signal_c = check_signals(
                 gap, up_price, time_remaining, cvd_5m, obi
             )
+            logger.info(f"Check Signals: A={signal_a}, B={signal_b}, C={signal_c} | gap=${gap:.2f}, up={up_price:.3f}, cvd={cvd_5m:+.0f}, obi={obi:.2f}")
             
             # Create observation
             obs = Observation(
@@ -962,8 +1087,7 @@ def run_monitor(
             ))
             
             # Execute if signal and not dry run
-            signal_a = True  # Force trade for testing
-            if not dry_run and executor and (signal_a or signal_b or signal_c):
+            if executor and (signal_a or signal_b or signal_c):
                 logger.info("Signal detected! Executing trade...")
                 result = executor.buy_token(
                     token_id=market.up_token_id,
@@ -1000,6 +1124,32 @@ def run_monitor(
                         }
                         trade_journal.log_entry(trade_record)
                         logger.info("Trade logged to journal")
+                        # Also save to DB for outcome evaluation
+                        if db and result.get('success'):
+                            try:
+                                db_trade = TradeRecord(
+                                    id=None,
+                                    timestamp=datetime.now(),
+                                    market_id=market.slug,
+                                    market_slug=market.slug,
+                                    token_id=market.up_token_id,
+                                    side='BUY',
+                                    price=up_price,
+                                    size_usdc=MAX_ORDER_SIZE,
+                                    size_tokens=result.get('size_tokens', MAX_ORDER_SIZE / up_price),
+                                    signal='BUY_UP',
+                                    confidence=trade_record.get('confidence', 0.7),
+                                    signal_strength=abs(trend_score) / 100.0 if trend_score is not None else 0.0,
+                                    polymarket_up_price=up_price,
+                                    pnl=None,
+                                    status='FILLED',
+                                    order_id=result.get('order_id'),
+                                    dry_run=dry_run,
+                                )
+                                db.save_trade(db_trade)
+                                logger.info("Trade saved to DB")
+                            except Exception as e:
+                                logger.error(f"Failed to save trade to DB: {e}")
 
                         # Register position for stop-loss monitoring and exit logging
                         if result.get('success') and stop_loss:
@@ -1162,6 +1312,9 @@ def run_monitor(
 # ============================================================================
 # ENTRY POINT
 # ============================================================================
+
+# --- Force CoinGecko primary price for pilot reliability ---
+USE_COINGECKO_PRIMARY = True  # Disable failing WS/REST price feeds
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BTC 15-Min Monitor V2")

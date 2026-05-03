@@ -1,0 +1,13 @@
+signal_a_gap: 2.0
+signal_a_max_price: 0.99
+signal_a_min_time: 30
+signal_b_gap: 4.0
+signal_b_max_price: 0.95
+signal_b_max_time: 180
+signal_c_cvd: 100.0
+signal_c_obi: 0.05
+signal_c_max_price: 0.5
+max_order_size: 5.0
+max_positions: 3
+trading_log_path: /home/amsan/trading/trading-log.yaml
+initial_capital: 1000.0

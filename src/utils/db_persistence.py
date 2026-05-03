@@ -89,24 +89,23 @@ class TradingDatabase:
                 CREATE TABLE IF NOT EXISTS trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT NOT NULL,
-                    market_id TEXT,
+                    action TEXT NOT NULL,              -- Buy / Sell / Redeem / Deposit
                     market_slug TEXT,
-                    token_id TEXT NOT NULL,
-                    side TEXT NOT NULL,
-                    price REAL NOT NULL,
-                    size_usdc REAL NOT NULL,
-                    size_tokens REAL NOT NULL,
-                    signal TEXT,
+                    market_name TEXT,
+                    token_id TEXT,
+                    token_name TEXT,                   -- Up / Down / USDC
+                    side TEXT,                         -- BUY / SELL (for Buy/Sell rows)
+                    price REAL,                        -- price per token (probability)
+                    size_usdc REAL,
+                    size_tokens REAL,
+                    order_id TEXT,                     -- Polymarket order ID
+                    tx_hash TEXT,                      -- transaction hash
+                    signal TEXT,                       -- Signal A/B/C (for Buy rows)
                     confidence REAL,
-                    signal_strength REAL,
-                    polymarket_up_price REAL,
-                    pnl REAL,
-                    status TEXT DEFAULT 'PENDING',
-                    order_id TEXT,
-                    dry_run BOOLEAN DEFAULT TRUE,
-                    outcome TEXT,
-                    resolved_at TEXT,
-                    final_up_price REAL
+                    pnl REAL,                          -- realized P&L (Sell/Redeem)
+                    outcome TEXT,                      -- win/loss/scratch
+                    final_up_price REAL,               -- 1.0 or 0.0 at settlement
+                    resolved_at TEXT
                 )
             """)
             
@@ -385,7 +384,7 @@ class TradingDatabase:
 
 
     def update_trade_outcome(self, trade_id: int, outcome: str, final_up_price: float) -> bool:
-        """Update a trade with its resolution outcome.
+        """Update a trade with its resolution outcome and compute P&L.
 
         Args:
             trade_id: Trade record ID
@@ -397,21 +396,39 @@ class TradingDatabase:
         """
         try:
             with self._get_connection() as conn:
+                # Fetch entry price and token size to compute P&L
+                row = conn.execute(
+                    "SELECT price, size_tokens, side FROM trades WHERE id = ?",
+                    (trade_id,)
+                ).fetchone()
+                pnl = None
+                if row:
+                    entry_price, size_tokens, side = row
+                    # Currently only BUY_UP side is supported by the bot
+                    # P&L = (final_up_price - entry_price) * size_tokens
+                    if side == 'BUY':
+                        pnl = (final_up_price - entry_price) * size_tokens
+                    # Future: handle BUY (down) side if needed
+
                 conn.execute("""
                     UPDATE trades
-                    SET outcome = ?, resolved_at = ?, final_up_price = ?
+                    SET outcome = ?, resolved_at = ?, final_up_price = ?, pnl = ?
                     WHERE id = ?
                 """, (
                     outcome,
                     datetime.now().isoformat(),
                     final_up_price,
+                    pnl,
                     trade_id
                 ))
                 conn.commit()
-                logger.debug(f"Updated trade {trade_id}: outcome={outcome}, final_up={final_up_price:.3f}")
+                logger.debug(
+                    f"Updated trade {trade_id}: outcome={outcome}, "
+                    f"final_up={final_up_price:.3f}, pnl={pnl:.4f if pnl is not None else 'N/A'}"
+                )
                 return True
         except Exception as e:
-            logger.error(f"Failed to update trade {trade_id} outcome: {e}")
+            logger.error(f"Failed to update trade outcome {trade_id}: {e}")
             return False
 
     def get_open_trades(self) -> List[Dict]:

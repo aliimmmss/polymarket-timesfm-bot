@@ -43,6 +43,8 @@ data/forecasts/*.json
 data/logs/*.log
 data/price_history/*
 data/observations/*.csv
+data/strategies/*
+data/validation_pid.txt
 
 # Logs
 *.log

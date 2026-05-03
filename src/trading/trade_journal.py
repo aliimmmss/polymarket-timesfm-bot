@@ -125,6 +125,9 @@ class TradeJournal:
         # Find entry to update
         target_idx = None
         for i, entry in enumerate(docs):
+            # Skip non-dict entries (e.g., legacy list-format documents)
+            if not isinstance(entry, dict):
+                continue
             # Match by order_id if provided
             if order_id is not None:
                 if entry.get('order_id') == order_id:

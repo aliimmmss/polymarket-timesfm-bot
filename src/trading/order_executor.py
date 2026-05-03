@@ -574,6 +574,33 @@ class OrderExecutor:
     def get_balances(self) -> Dict:
         """Get wallet balances."""
         if self.dry_run:
+            # Compute paper balance from trades DB: initial_capital + realized_pnl - locked_capital
+            try:
+                import yaml
+                import sqlite3
+                # Locate config and DB
+                home = os.path.expanduser('~')
+                config_path = os.path.join(home, 'polymarket-timesfm-bot', 'data', 'pilot_config.yaml')
+                db_path = os.path.join(home, 'polymarket-timesfm-bot', 'data', 'trading.db')
+                initial_capital = 1000.0
+                if os.path.exists(config_path):
+                    with open(config_path) as fh:
+                        cfg = yaml.safe_load(fh) or {}
+                    initial_capital = float(cfg.get('initial_capital', 1000.0))
+                if os.path.exists(db_path):
+                    conn = sqlite3.connect(db_path)
+                    cur = conn.cursor()
+                    # Realized P&L sum
+                    cur.execute("SELECT SUM(pnl) FROM trades WHERE pnl IS NOT NULL")
+                    realized = cur.fetchone()[0] or 0.0
+                    # Open positions capital (size_usdc)
+                    cur.execute("SELECT SUM(size_usdc) FROM trades WHERE pnl IS NULL")
+                    locked = cur.fetchone()[0] or 0.0
+                    conn.close()
+                    available = initial_capital + realized - locked
+                    return {'USDC': round(available, 2), 'positions': {}}
+            except Exception as e:
+                logger.debug(f"Dry-run balance compute failed: {e}")
             return {'USDC': 1000.0, 'positions': {}}
         
         try:

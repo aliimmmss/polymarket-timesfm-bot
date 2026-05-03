@@ -1,0 +1,14 @@
+name: balanced
+signal_a_gap: 6.0
+signal_a_max_price: 0.99
+signal_a_min_time: 40
+signal_b_gap: 12.0
+signal_b_max_price: 0.95
+signal_b_max_time: 165
+signal_c_cvd: 12.0
+signal_c_obi: 0.1
+signal_c_max_price: 0.5
+max_order_size: 4.0
+max_positions: 3
+notes: 'Balanced: medium confidence threshold (~0.70), balanced risk'
+trading_log_path: /home/amsan/trading/trading-log-val-balanced.yaml

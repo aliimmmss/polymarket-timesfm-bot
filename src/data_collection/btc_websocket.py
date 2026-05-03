@@ -14,6 +14,7 @@ import json
 import logging
 import threading
 import time
+import ssl
 from collections import deque
 from typing import Dict, List, Optional, Tuple
 
@@ -154,7 +155,7 @@ class BinanceBTCWebSocket:
             f"{self.symbol}@trade",
             f"{self.symbol}@depth20@100ms",
         ]
-        url = f"{self.WS_URL}/{self.symbol}@trade/{self.symbol}@depth20@100ms"
+        url = f"wss://stream.binance.com:9443/stream?streams={self.symbol}@trade/{self.symbol}@depth20@100ms"
         
         logger.info(f"Connecting to {url}")
         
@@ -166,7 +167,7 @@ class BinanceBTCWebSocket:
             on_close=self._on_close
         )
         
-        self._ws.run_forever()
+        self._ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
     
     def _on_open(self, ws) -> None:
         """Called when connection opens."""
@@ -176,7 +177,12 @@ class BinanceBTCWebSocket:
     def _on_message(self, ws, message: str) -> None:
         """Process incoming WebSocket message."""
         try:
-            data = json.loads(message)
+            msg = json.loads(message)
+            # Handle combined stream format: {"stream": "...", "data": {...}}
+            if 'stream' in msg and 'data' in msg:
+                data = msg['data']
+            else:
+                data = msg
             
             # Handle trade message
             if 'e' in data and data['e'] == 'trade':
